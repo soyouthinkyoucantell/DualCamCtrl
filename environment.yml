@@ -1,0 +1,6 @@
+name: diffsynth
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+prefix: /hpc2hdd/home/hongfeizhang/opt/anaconda3/envs/diffsynth
