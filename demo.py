@@ -38,12 +38,12 @@ input_video = read_video_as_pil_frames(video_path)
 # input_image = Image.open("/hpc2hdd/home/hongfeizhang/dataset/ttr/westerndesert/Easy/P007/image_left/000001_left.png")
 # end_image = Image.open("/hpc2hdd/home/hongfeizhang/dataset/ttr/westerndesert/Easy/P007/image_left/000090_left.png")
 start_frame = 0
-end_frame = 80
+end_frame = 40
 input_image = input_video[start_frame]
 end_image = input_video[end_frame]
 # input_image = input_video[0]
 # end_image = input_video[200]
-extra_frame_idx = list(range(5, 17))  # Indices of extra frames to be used
+extra_frame_idx = list(range(5, 33))  # Indices of extra frames to be used
 extract_image_frame_index = extra_frame_idx.copy()
 extra_images = [input_video[i] for i in extract_image_frame_index]
 
@@ -74,6 +74,7 @@ pipe = WanVideoPipeline.from_pretrained(
         ModelConfig(
             model_id="PAI/Wan2.1-Fun-V1.1-1.3B-InP",
             origin_file_pattern="models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+            # models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
             offload_device="cpu",
         ),
     ],
@@ -87,7 +88,7 @@ video = pipe(
     prompt="一个动画场景，镜头慢慢往左下移动，从门看向地板，视频清晰可见，地板和墙上有明显的反光。",
     # negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
     input_image=input_image,
-    # end_image=end_image,
+    end_image=end_image,
     extra_images=extra_images,
     extract_image_frame_index=extract_image_frame_index,
     control_video=input_video[start_frame: end_frame + 1],

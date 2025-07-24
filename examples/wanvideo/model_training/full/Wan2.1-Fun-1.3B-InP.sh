@@ -1,4 +1,4 @@
-accelerate launch examples/wanvideo/model_training/train.py \
+accelerate launch examples/wanvideo/model_training/train_with_accelerate.py \
   --dataset_base_path data/example_video_dataset \
   --dataset_metadata_path data/example_video_dataset/metadata.csv \
   --height 480 \

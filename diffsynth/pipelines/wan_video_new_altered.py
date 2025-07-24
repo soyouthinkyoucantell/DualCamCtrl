@@ -15,6 +15,9 @@ from PIL import Image
 from tqdm import tqdm
 from typing import Optional, List, Union
 from typing_extensions import Literal
+from ..model.camera_pose_encoder.pose_adaptor import (
+    CameraPoseEncoder
+)
 
 from ..models import ModelManager, load_state_dict
 from ..models.wan_video_dit import WanControlNet, RMSNorm, sinusoidal_embedding_1d
@@ -73,41 +76,52 @@ class BasePipeline(torch.nn.Module):
 
     def check_resize_height_width(self, height, width, num_frames=None):
         # Shape check
-        print(
-            f"height, width, time division factor: {self.height_division_factor}, {self.width_division_factor}, {self.time_division_factor}, time division remainder: {self.time_division_remainder}"
+        # print(
+        #     f"height, width, time division factor: {self.height_division_factor}, {self.width_division_factor}, {self.time_division_factor}, time division remainder: {self.time_division_remainder}"
+        # )
+        assert height % self.height_division_factor == 0, (
+            f"height {height} is not divisible by {self.height_division_factor}."
         )
-        if height % self.height_division_factor != 0:
-            height = (
-                (height + self.height_division_factor - 1)
-                // self.height_division_factor
-                * self.height_division_factor
-            )
-            print(
-                f"height % {self.height_division_factor} != 0. We round it up to {height}."
-            )
-        if width % self.width_division_factor != 0:
-            width = (
-                (width + self.width_division_factor - 1)
-                // self.width_division_factor
-                * self.width_division_factor
-            )
-            print(
-                f"width % {self.width_division_factor} != 0. We round it up to {width}."
-            )
-        if num_frames is None:
-            return height, width
-        else:
-            if num_frames % self.time_division_factor != self.time_division_remainder:
-                num_frames = (
-                    (num_frames + self.time_division_factor - 1)
-                    // self.time_division_factor
-                    * self.time_division_factor
-                    + self.time_division_remainder
-                )
-                print(
-                    f"num_frames % {self.time_division_factor} != {self.time_division_remainder}. We round it up to {num_frames}."
-                )
-            return height, width, num_frames
+
+        assert width % self.width_division_factor == 0, (
+            f"width {width} is not divisible by {self.width_division_factor}."
+        )
+        assert (num_frames is not None) and ((num_frames+self.time_division_factor) % self.time_division_factor == self.time_division_remainder), (
+            f"num_frames {num_frames} is not divisible by {self.time_division_factor} with remainder {self.time_division_remainder}."
+        )
+        return height, width, num_frames
+
+        # if height % self.height_division_factor != 0:
+        #     height = (
+        #         (height + self.height_division_factor - 1)
+        #         // self.height_division_factor
+        #         * self.height_division_factor
+        #     )
+        #     print(
+        #         f"height % {self.height_division_factor} != 0. We round it up to {height}."
+        #     )
+        # if width % self.width_division_factor != 0:
+        #     width = (
+        #         (width + self.width_division_factor - 1)
+        #         // self.width_division_factor
+        #         * self.width_division_factor
+        #     )
+        #     print(
+        #         f"width % {self.width_division_factor} != 0. We round it up to {width}."
+        #     )
+        # if num_frames is None:
+        #     return height, width
+        # else:
+        #     if num_frames % self.time_division_factor != self.time_division_remainder:
+        #         num_frames = (
+        #             (num_frames + self.time_division_factor - 1)
+        #             // self.time_division_factor
+        #             * self.time_division_factor
+        #             + self.time_division_remainder
+        #         )
+        #         print(
+        #             f"num_frames % {self.time_division_factor} != {self.time_division_remainder}. We round it up to {num_frames}."
+        #         )
 
     def preprocess_image(
         self,
@@ -224,6 +238,7 @@ class BasePipeline(torch.nn.Module):
             None if seed is None else torch.Generator(
                 rand_device).manual_seed(seed)
         )
+        # TODO multi-res noise
         noise = torch.randn(
             shape, generator=generator, device=rand_device, dtype=rand_torch_dtype
         )
@@ -354,13 +369,13 @@ class WanVideoPipeline(BasePipeline):
             WanVideoUnit_PromptEmbedder(),
             WanVideoUnit_ImageEmbedder(),
             WanVideoUnit_Control_Embedder(),
-            WanVideoUnit_FunReference(),
+            # WanVideoUnit_FunReference(),
             WanVideoUnit_CameraPoseEmbedder(),
-            WanVideoUnit_SpeedControl(),
-            WanVideoUnit_VACE(),
+            # WanVideoUnit_SpeedControl(),
+            # WanVideoUnit_VACE(),
             WanVideoUnit_UnifiedSequenceParallel(),
-            WanVideoUnit_TeaCache(),
-            WanVideoUnit_CfgMerger(),
+            # WanVideoUnit_TeaCache(),
+            # WanVideoUnit_CfgMerger(),
         ]
         self.model_fn = model_fn_wan_video
 
@@ -632,7 +647,7 @@ class WanVideoPipeline(BasePipeline):
         )
         controlnet = WanControlNet(**conf)
         state = controlnet.load_state_dict(pipe.dit.state_dict(), strict=False)
-        print(f"Missing keys in controlnet: {state.missing_keys}")
+        # print(f"Missing keys in controlnet: {state.missing_keys}")
         pipe.dit = controlnet
         pipe.dit.copy_weights_from_main_branch()
         pipe.dit.zero_init_linear()
@@ -679,6 +694,7 @@ class WanVideoPipeline(BasePipeline):
         extra_images: Optional[List[Image.Image]] = None,
         extract_image_frame_index: Optional[List[int]] = None,
         # Camera control
+        camera_pose: Optional[torch.Tensor] = None,
         camera_control_direction: Optional[
             Literal[
                 "Left",
@@ -800,13 +816,13 @@ class WanVideoPipeline(BasePipeline):
             "extract_image_frame_index": extract_image_frame_index,
         }
         for unit in self.units:
-            print(f"Process unit {unit.__class__.__name__} ...")
+            # print(f"Process unit {unit.__class__.__name__} ...")
             inputs_shared, inputs_posi, inputs_nega = self.unit_runner(
                 unit, self, inputs_shared, inputs_posi, inputs_nega
             )
-            print(
-                f"y shape: {inputs_shared['y'].shape if 'y' in inputs_shared and inputs_shared['y'] is not None else 'N/A'}, "
-            )
+            # print(
+            #     f"y shape: {inputs_shared['y'].shape if 'y' in inputs_shared and inputs_shared['y'] is not None else 'N/A'}, "
+            # )
 
         # Denoise
         self.load_models_to_device(self.in_iteration_models)
@@ -1136,18 +1152,18 @@ class WanVideoUnit_ImageEmbedder(PipelineUnit):
                 ],
                 dim=1,
             )
-        print(f"extra images len:{len(extra_images)}")
-        print(f"extra images index: {extract_image_frame_index}")
+        # print(f"extra images len:{len(extra_images)}")
+        # print(f"extra images index: {extract_image_frame_index}")
         if extra_images is not None and len(extract_image_frame_index) > 0:
             assert len(extract_image_frame_index) == len(extra_images)
             for idx, image in zip(extract_image_frame_index, extra_images):
-                print(f"Extracting image {idx} from extra images.")
+                # print(f"Extracting image {idx} from extra images.")
 
                 if idx < num_frames:
                     image = pipe.preprocess_image(image.resize((width, height))).to(
                         pipe.device
                     )
-                    print("Image shape:", image.shape)
+                    # print("Image shape:", image.shape)
 
                     vae_input[:, idx] = image.squeeze(0)
                     msk[:, idx] = 1
@@ -1158,9 +1174,9 @@ class WanVideoUnit_ImageEmbedder(PipelineUnit):
         msk = msk.view(1, msk.shape[1] // 4, 4, height // 8, width // 8)
         msk = msk.transpose(1, 2)[0]
 
-        print(
-            f"before VAE encode, vae_input shape: {vae_input.shape}, msk shape: {msk.shape}"
-        )
+        # print(
+        #     f"before VAE encode, vae_input shape: {vae_input.shape}, msk shape: {msk.shape}"
+        # )
 
         y = pipe.vae.encode(
             [vae_input.to(dtype=pipe.torch_dtype, device=pipe.device)],
@@ -1235,41 +1251,12 @@ class WanVideoUnit_Control_Embedder(PipelineUnit):
                 dtype=pipe.torch_dtype,
                 device=pipe.device,
             )
-        print(
-            f"Control embedder return control latents with shape {control_latents.shape}"
-        )
-        # else:
-        #     y = y[:, -16:]
-        # print(f"latent shape: {y.shape if y is not None else None}")
-        # print(f"control latent shape: {control_latents.shape}")
-        # y = torch.concat([control_latents, y], dim=1)
+
         return {
             "clip_feature": clip_feature,
             "y": y,
             "control_latents": control_latents,
         }
-
-
-class WanVideoUnit_FunReference(PipelineUnit):
-    def __init__(self):
-        super().__init__(
-            input_params=("reference_image", "height",
-                          "width", "reference_image"),
-            onload_model_names=("vae"),
-        )
-
-    def process(self, pipe: WanVideoPipeline, reference_image, height, width):
-        if reference_image is None:
-            print(f"No reference image provided, skipping reference embedding.")
-            return {}
-        pipe.load_models_to_device(["vae"])
-        reference_image = reference_image.resize((width, height))
-        reference_latents = pipe.preprocess_video([reference_image])
-        reference_latents = pipe.vae.encode(
-            reference_latents, device=pipe.device)
-        clip_feature = pipe.preprocess_image(reference_image)
-        clip_feature = pipe.image_encoder.encode_image([clip_feature])
-        return {"reference_latents": reference_latents, "clip_feature": clip_feature}
 
 
 class WanVideoUnit_CameraPoseEmbedder(PipelineUnit):
@@ -1309,94 +1296,80 @@ class WanVideoUnit_CameraPoseEmbedder(PipelineUnit):
         return {"control_camera_latents_input": control_camera_latents_input, }
 
 
-class WanVideoUnit_FunCameraControl(PipelineUnit):
-    def __init__(self):
-        super().__init__(
-            input_params=(
-                "height",
-                "width",
-                "num_frames",
-                "camera_pose",
-                "latents",
-                "input_image",
-            )
-        )
+# class WanVideoUnit_FunCameraControl(PipelineUnit):
+#     def __init__(self):
+#         super().__init__(
+#             input_params=(
+#                 "height",
+#                 "width",
+#                 "num_frames",
+#                 "camera_pose",
+#                 "latents",
+#                 "input_image",
+#             )
+#         )
 
-    def process(
-        self,
-        pipe: WanVideoPipeline,
-        height,
-        width,
-        num_frames,
-        camera_pose,
-        latents,
-        input_image,
-    ):
-        camera_control_plucker_embedding = (
-            pipe.dit.control_adapter.process_camera_coordinates(
-                camera_control_direction,
-                num_frames,
-                height,
-                width,
-                camera_control_speed,
-                camera_control_origin,
-            )
-        )
+#     def process(
+#         self,
+#         pipe: WanVideoPipeline,
+#         height,
+#         width,
+#         num_frames,
+#         camera_pose,
+#         latents,
+#         input_image,
+#     ):
+#         camera_control_plucker_embedding = (
+#             pipe.dit.control_adapter.process_camera_coordinates(
+#                 camera_control_direction,
+#                 num_frames,
+#                 height,
+#                 width,
+#                 camera_control_speed,
+#                 camera_control_origin,
+#             )
+#         )
 
-        control_camera_video = (
-            camera_control_plucker_embedding[:num_frames]
-            .permute([3, 0, 1, 2])
-            .unsqueeze(0)
-        )
+#         control_camera_video = (
+#             camera_control_plucker_embedding[:num_frames]
+#             .permute([3, 0, 1, 2])
+#             .unsqueeze(0)
+#         )
 
-        control_camera_latents = torch.concat(
-            [
-                torch.repeat_interleave(
-                    control_camera_video[:, :, 0:1], repeats=4, dim=2
-                ),
-                control_camera_video[:, :, 1:],
-            ],
-            dim=2,
-        ).transpose(1, 2)
+#         control_camera_latents = torch.concat(
+#             [
+#                 torch.repeat_interleave(
+#                     control_camera_video[:, :, 0:1], repeats=4, dim=2
+#                 ),
+#                 control_camera_video[:, :, 1:],
+#             ],
+#             dim=2,
+#         ).transpose(1, 2)
 
-        b, f, c, h, w = control_camera_latents.shape
-        control_camera_latents = (
-            control_camera_latents.contiguous()
-            .view(b, f // 4, 4, c, h, w)
-            .transpose(2, 3)
-        )
-        control_camera_latents = (
-            control_camera_latents.contiguous()
-            .view(b, f // 4, c * 4, h, w)
-            .transpose(1, 2)
-        )
-        control_camera_latents_input = control_camera_latents.to(
-            device=pipe.device, dtype=pipe.torch_dtype
-        )
-        print(
-            f"control_camera_latents_input shape: {control_camera_latents_input.shape}"
-        )
-        input_image = input_image.resize((width, height))
-        input_latents = pipe.preprocess_video([input_image])
-        input_latents = pipe.vae.encode(input_latents, device=pipe.device)
-        y = torch.zeros_like(latents).to(pipe.device)
-        y[:, :, :1] = input_latents
-        y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
-        return {"control_camera_latents_input": control_camera_latents_input, "y": y}
-
-
-class WanVideoUnit_SpeedControl(PipelineUnit):
-    def __init__(self):
-        super().__init__(input_params=("motion_bucket_id",))
-
-    def process(self, pipe: WanVideoPipeline, motion_bucket_id):
-        if motion_bucket_id is None:
-            print(f"No motion bucket ID provided, skipping speed control.")
-            return {}
-        motion_bucket_id = torch.Tensor((motion_bucket_id,)).to(
-            dtype=pipe.torch_dtype, device=pipe.device
-        )
-        return {"motion_bucket_id": motion_bucket_id}
+#         b, f, c, h, w = control_camera_latents.shape
+#         control_camera_latents = (
+#             control_camera_latents.contiguous()
+#             .view(b, f // 4, 4, c, h, w)
+#             .transpose(2, 3)
+#         )
+#         control_camera_latents = (
+#             control_camera_latents.contiguous()
+#             .view(b, f // 4, c * 4, h, w)
+#             .transpose(1, 2)
+#         )
+#         control_camera_latents_input = control_camera_latents.to(
+#             device=pipe.device, dtype=pipe.torch_dtype
+#         )
+#         print(
+#             f"control_camera_latents_input shape: {control_camera_latents_input.shape}"
+#         )
+#         input_image = input_image.resize((width, height))
+#         input_latents = pipe.preprocess_video([input_image])
+#         input_latents = pipe.vae.encode(input_latents, device=pipe.device)
+#         y = torch.zeros_like(latents).to(pipe.device)
+#         y[:, :, :1] = input_latents
+#         y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
+#         return {"control_camera_latents_input": control_camera_latents_input, "y": y}
 
 
 class WanVideoUnit_VACE(PipelineUnit):
@@ -1514,6 +1487,7 @@ class WanVideoUnit_VACE(PipelineUnit):
                 (vace_video_latents, vace_mask_latents), dim=1)
             return {"vace_context": vace_context, "vace_scale": vace_scale}
         else:
+            print(f"No VACE video, mask or reference image provided, skipping VACE.")
             return {"vace_context": None, "vace_scale": vace_scale}
 
 
@@ -1528,39 +1502,39 @@ class WanVideoUnit_UnifiedSequenceParallel(PipelineUnit):
         return {}
 
 
-class WanVideoUnit_TeaCache(PipelineUnit):
-    def __init__(self):
-        super().__init__(
-            seperate_cfg=True,
-            input_params_posi={
-                "num_inference_steps": "num_inference_steps",
-                "tea_cache_l1_thresh": "tea_cache_l1_thresh",
-                "tea_cache_model_id": "tea_cache_model_id",
-            },
-            input_params_nega={
-                "num_inference_steps": "num_inference_steps",
-                "tea_cache_l1_thresh": "tea_cache_l1_thresh",
-                "tea_cache_model_id": "tea_cache_model_id",
-            },
-        )
+# class WanVideoUnit_TeaCache(PipelineUnit):
+#     def __init__(self):
+#         super().__init__(
+#             seperate_cfg=True,
+#             input_params_posi={
+#                 "num_inference_steps": "num_inference_steps",
+#                 "tea_cache_l1_thresh": "tea_cache_l1_thresh",
+#                 "tea_cache_model_id": "tea_cache_model_id",
+#             },
+#             input_params_nega={
+#                 "num_inference_steps": "num_inference_steps",
+#                 "tea_cache_l1_thresh": "tea_cache_l1_thresh",
+#                 "tea_cache_model_id": "tea_cache_model_id",
+#             },
+#         )
 
-    def process(
-        self,
-        pipe: WanVideoPipeline,
-        num_inference_steps,
-        tea_cache_l1_thresh,
-        tea_cache_model_id,
-    ):
-        if tea_cache_l1_thresh is None:
-            print(f"No TeaCache L1 threshold provided, skipping TeaCache.")
-            return {}
-        return {
-            "tea_cache": TeaCache(
-                num_inference_steps,
-                rel_l1_thresh=tea_cache_l1_thresh,
-                model_id=tea_cache_model_id,
-            )
-        }
+#     def process(
+#         self,
+#         pipe: WanVideoPipeline,
+#         num_inference_steps,
+#         tea_cache_l1_thresh,
+#         tea_cache_model_id,
+#     ):
+#         if tea_cache_l1_thresh is None:
+#             print(f"No TeaCache L1 threshold provided, skipping TeaCache.")
+#             return {}
+#         return {
+#             "tea_cache": TeaCache(
+#                 num_inference_steps,
+#                 rel_l1_thresh=tea_cache_l1_thresh,
+#                 model_id=tea_cache_model_id,
+#             )
+#         }
 
 
 class WanVideoUnit_CfgMerger(PipelineUnit):
@@ -1571,6 +1545,7 @@ class WanVideoUnit_CfgMerger(PipelineUnit):
 
     def process(self, pipe: WanVideoPipeline, inputs_shared, inputs_posi, inputs_nega):
         if not inputs_shared["cfg_merge"]:
+            print(f"Skipping CFG merge, cfg_merge is set to False.")
             return inputs_shared, inputs_posi, inputs_nega
         for name in self.concat_tensor_names:
             tensor_posi = inputs_posi.get(name)
@@ -1816,6 +1791,7 @@ def model_fn_wan_video(
         )
 
     if control_latents is None:
+        pritn(f"No control latents provided, initializing to zeros.")
         control_latents = torch.zeros_like(x)
     t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, timestep))
     t_mod = dit.time_projection(t).unflatten(1, (6, dit.dim))
@@ -1910,7 +1886,7 @@ def model_fn_wan_video(
                 #     _pose_embeddings = rearrange(
                 #         _pose_embeddings, 'b c h w -> b (h w) c')
 
-                print(f"pose embeddings shape: {_pose_embeddings.shape}")
+                # print(f"pose embeddings shape: {_pose_embeddings.shape}")
             else:
                 _pose_embeddings = None
             if idx < dit.num_control_block:

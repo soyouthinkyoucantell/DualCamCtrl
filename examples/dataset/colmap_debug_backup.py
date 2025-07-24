@@ -16,7 +16,8 @@ from .normalize import (
     transform_cameras,
     transform_points,
 )
-
+# import dataset
+from torch.utils.data import Dataset
 from .graphics_utils import focal2fov
 from .camera_utils import CameraInfo
 import torchvision
@@ -385,7 +386,7 @@ class Parser:
         }
 
 
-class Dataset:
+class ScenePose(Dataset):
     """A simple dataset class."""
 
     def __init__(
@@ -967,6 +968,280 @@ class Dataset:
             return self.data_list[item]
 
 
+class ScenesDataset(Dataset):
+    """A simple dataset class."""
+
+    def __init__(
+        self,
+        args,
+        parser: Parser,
+        split: str = "train",
+        patch_size: Optional[List[int]] = [],
+        # load_depths: bool = False,
+        sparse_view: int = 0,
+        extrapolator=None,
+    ):
+        self.parser = parser
+        self.split = split
+        self.patch_size = patch_size
+        # self.load_depths = load_depths
+        self.extrapolator = extrapolator
+        self.args = args
+        print(f"Datset args: {self.args}")
+        indices = np.arange(len(self.parser.image_names))
+
+        if split == 'train':
+            print(
+                f"[Dataset] Using all {len(indices)} indices for training.")
+            self.indices = indices
+        elif split == 'test':
+            print(
+                f"[Dataset] Using all {len(indices)} indices for testing.")
+            self.indices = indices
+
+        self.generate_fixed_step_trajectory()
+
+        self.load_image_into_memory()
+
+    def __getitem__(self, item: int):
+        pass
+
+    def __len__(self):
+        return len(self.indices)
+
+    def process_batch(self, rgb_batch):
+        depth_batch = torch.zeros(
+            (1, rgb_batch.shape[1], rgb_batch.shape[2], rgb_batch.shape[3]),
+            device=rgb_batch.device,
+        )
+
+        # Randomly select one frame from rgb_batch as reference
+        rand_idx = random.randint(0, rgb_batch.shape[1] - 1)
+        # Shape: [3, 1, H, W]
+        ref_batch = rgb_batch[:, rand_idx: rand_idx + 1, :, :]
+
+        repaired_rgb, repaired_depth, _, _ = self.extrapolator.repair(
+            rgb_batch, depth_batch, ref_batch
+        )
+        repaired_rgb = repaired_rgb.cpu()
+        repaired_depth = repaired_depth.cpu()
+
+        torch.cuda.empty_cache()
+        return repaired_rgb, repaired_depth
+
+    def load_image_into_memory(self):
+        print(f"Loading {len(self.indices)} images into memory...")
+        print(
+            f"Trajectories: {len(self.trajectories) if hasattr(self, 'trajectories') else 'Not set'}")
+        self.data_list = []
+        for i, index in enumerate(self.indices):
+            image_path = self.parser.image_paths[index]
+            image_name = self.parser.image_names[index]
+            # Extract scene name and image name from path
+
+            image = imageio.imread(self.parser.image_paths[index])[..., :3]
+            height, width = image.shape[:2]
+            camera_id = self.parser.camera_ids[index]
+            K = self.parser.Ks_dict[camera_id].copy()  # undistorted K
+            params = self.parser.params_dict[camera_id]
+            c2w = self.parser.camtoworlds[index]
+            mask = self.parser.mask_dict[camera_id]
+            w2c = np.linalg.inv(c2w)
+
+            if len(params) > 0:
+                # Images are distorted. Undistort them.
+                mapx, mapy = (
+                    self.parser.mapx_dict[camera_id],
+                    self.parser.mapy_dict[camera_id],
+                )
+                image = cv2.remap(image, mapx, mapy, cv2.INTER_LINEAR)
+                x, y, w, h = self.parser.roi_undist_dict[camera_id]
+                image = image[y: y + h, x: x + w]
+
+            # print(
+            #     f"Self.trajectories: {self.trajectories if hasattr(self, 'trajectories') else 'Not set'}")
+            if len(self.patch_size) > 0:
+                # # Random crop.self.patch_size
+                if len(self.trajectories[0]) == 4:
+                    print(
+                        f"Using trajectory with 4 elements: {self.trajectories[index]}")
+                    x_start, y_start, _, _ = self.trajectories[index]
+                else:
+                    x_start, y_start = self.trajectories[index]
+                image = image[
+                    y_start: y_start + int(self.patch_size[1]),
+                    x_start: x_start + int(self.patch_size[0]),
+                ]
+                # print(image.shape)
+                K[0, 2] -= x_start
+                K[1, 2] -= y_start
+
+            h, w = image.shape[:2]
+
+            cam_info = CameraInfo(
+                uid=i,
+                colmapid=index,
+                K=K,
+                w2c=w2c,
+                image_name=image_name,
+                image_path=image_path,
+                width=w,
+                height=h,
+            )
+
+            data = {
+                "cam_info": cam_info,
+                "image": torch.from_numpy(image) / 255.0,
+                "image_name": image_name,
+            }
+
+            if mask is not None:
+                data["mask"] = torch.from_numpy(mask)
+            # print(f"If data has mask: {data.get('mask', None) is not None}")
+            self.data_list.append(data)
+
+        """
+        Visualize each cropped image with an arrow pointing towards a fixed 3D world point.
+
+        Args:
+            target_3d_point: (3,) ndarray - the fixed 3D point in world coordinates
+        """
+        import os
+        import cv2
+        from tqdm import tqdm
+
+        output_dir = "output_rgb_viewpoint"
+        os.makedirs(output_dir, exist_ok=True)
+
+        for idx, index in enumerate(tqdm(self.indices)):
+            # Load image
+            image = cv2.imread(self.parser.image_paths[index])
+            if image is None:
+                print(f"Failed to load image {self.parser.image_paths[index]}")
+                continue
+
+            # Crop image using trajectory
+            if len(self.trajectories[0]) == 4:
+                x_start, y_start, _, _ = self.trajectories[idx]
+            else:
+                x_start, y_start = self.trajectories[idx]
+            image = image[
+                y_start: y_start + int(self.patch_size[1]),
+                x_start: x_start + int(self.patch_size[0]),
+            ]
+            h, w = image.shape[:2]
+
+            # Get camera info
+            K = self.parser.Ks_dict[self.parser.camera_ids[index]].copy()
+            K[0, 2] -= x_start
+            K[1, 2] -= y_start
+            c2w = self.parser.camtoworlds[index]
+
+            # Compute camera center in world coords
+            cam_center = c2w[:3, 3]
+
+            # Compute direction from camera center to target point
+            direction = target_3d_point - cam_center
+            direction = direction / np.linalg.norm(direction)
+
+            # Transform direction to camera space
+            R = c2w[:3, :3]
+            direction_cam = R.T @ direction  # In camera's local frame
+
+            if direction_cam[2] <= 0:
+                print(f"Frame {idx}: target is behind the camera.")
+                continue  # Point is behind the camera
+
+            # Project direction to pixel
+            pixel = K @ direction_cam
+            pixel /= pixel[2]
+
+            pixel_x, pixel_y = int(pixel[0]), int(pixel[1])
+            center_x, center_y = w // 2, h // 2
+
+            # Draw arrow
+            arrowed_image = image.copy()
+            cv2.arrowedLine(
+                arrowed_image,
+                (center_x, center_y),
+                (pixel_x, pixel_y),
+                (0, 0, 255),
+                thickness=2,
+                tipLength=0.1,
+            )
+
+            # Save image
+            out_path = os.path.join(output_dir, f"frame_{idx:04d}.jpg")
+            cv2.imwrite(out_path, arrowed_image)
+
+        print(f"Viewpoint visualization saved to {output_dir}")
+
+    def generate_fixed_step_trajectory(self):
+        original_state = np.random.get_state()
+        np.random.seed()
+        num_images = len(self.indices)
+        image_0 = cv2.imread(self.parser.image_paths[0])
+        h, w = image_0.shape[:2]
+        max_height = (
+            h - self.patch_size[1]
+        )  # min(h - self.patch_size[1] for _, h in sizes)
+        max_width = (
+            w - self.patch_size[0]
+        )  # min(w - self.patch_size[0] for w, _ in sizes)
+        trajectories = []
+        # for i in range(num_images):
+        #     trajectories.append((0, 0))
+        # self.trajectories = trajectories[:num_images]
+        # return
+        x = np.random.randint(0, max(w - int(self.patch_size[0]), 1))
+        y = np.random.randint(0, max(h - int(self.patch_size[1]), 1))
+        print("start: ", x, y)
+        direction_x = 1
+        direction_y = 1
+
+        step_y = np.random.randint(5, 30)
+        step_x = np.random.randint(5, 30)
+
+        while len(trajectories) < num_images:
+            new_x = x + direction_x * step_x
+            new_y = y + direction_y * step_y
+            if new_x >= max_width or new_y >= max_height or new_x < 0 or new_y < 0:
+                if new_x >= max_width and new_y >= max_height:
+                    direction_x = -1
+                    direction_y = -1
+                elif new_x < 0 and new_y >= max_height:
+                    direction_x = 1
+                    direction_y = -1
+                elif new_x >= max_width and new_y < 0:
+                    direction_x = -1
+                    direction_y = 1
+                elif new_x < 0 and new_y < 0:
+                    direction_x = 1
+                    direction_y = 1
+                elif new_y >= max_height:
+                    direction_x = np.random.choice([-1, 1])
+                    direction_y = -1
+                elif new_x >= max_width:
+                    direction_x = -1
+                    direction_y = np.random.choice([-1, 1])
+                elif new_y < 0:
+                    direction_x = np.random.choice([-1, 1])
+                    direction_y = 1
+                elif new_x < 0:
+                    direction_x = 1
+                    direction_y = np.random.choice([-1, 1])
+
+                step_y = np.random.randint(5, 30)
+                step_x = np.random.randint(5, 30)
+                continue
+            else:
+                x, y = new_x, new_y
+            trajectories.append((x, y))
+        np.random.set_state(original_state)
+
+        self.trajectories = trajectories[:num_images]
+
+
 if __name__ == "__main__":
     # Example usage
     meta_json = '/hpc2hdd/home/hongfeizhang/hongfei_workspace/DiffSynth-Studio/camera_data_paths.json'
@@ -985,9 +1260,9 @@ if __name__ == "__main__":
     for meta_path in meta_paths:
         data_dir = os.path.dirname(meta_path.strip())
         parser = Parser(data_dir, factor=1, normalize=True)
-        dataset = Dataset(args=args, parser=parser,
-                          split="train",
-                          patch_size=[720, 480])
+        dataset = ScenesDataset(args=args, parser=parser,
+                                split="train",
+                                patch_size=[720, 480])
         # 这里调用刚写的函数，指定你想观察的3D点坐标
         fixed_point = np.array([0.0, 0.0, 0.0])  # 比如世界坐标原点
         base_name = os.path.basename(data_dir)
@@ -995,5 +1270,3 @@ if __name__ == "__main__":
         os.makedirs(save_root, exist_ok=True)
         output_video_path = os.path.join(
             save_root, f"{base_name}_projection_video.avi")
-        dataset.visualize_point_projection_video(
-            fixed_point, output_path=output_video_path)

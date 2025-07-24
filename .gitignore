@@ -6,3 +6,4 @@ output_rgb_crop/
 ._____temp/
 .vscode/
 __pycache__/
+camera_pose_viz/

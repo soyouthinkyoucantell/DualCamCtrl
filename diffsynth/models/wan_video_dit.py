@@ -1055,9 +1055,9 @@ class WanControlNet(WanModel):
     def patchify(
         self, x: torch.Tensor, control_camera_latents_input: torch.Tensor = None
     ):
-        print(f"x shape before patch embedding: {x.shape}")
+        # print(f"x shape before patch embedding: {x.shape}")
         x = self.patch_embedding(x)
-        print(f"x shape after patch embedding: {x.shape}")
+        # print(f"x shape after patch embedding: {x.shape}")
         if (
             self.control_adapter is not None
             and control_camera_latents_input is not None
