@@ -143,6 +143,12 @@ Or install from pypi (There is a delay in the update. If you want to experience 
 
 ```
 pip install diffsynth
+
+```
+Then install GenFusion dependencies:
+```
+pip install git+https://github.com/rmbrualla/pycolmap@cc7ea4b7301720ac29287dbe450952511b32125e
+pip install numpy==1.26.4
 ```
 
 If you encounter issues during installation, it may be caused by the packages we depend on. Please refer to the documentation of the package that caused the problem.
