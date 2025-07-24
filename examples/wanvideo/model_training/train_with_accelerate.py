@@ -127,7 +127,6 @@ class WanTrainingModule(DiffusionTrainingModule):
             'extra_images': data.get("extra_images", None),
             'extra_image_frame_index': data.get("extra_image_frame_index", None),
             'control_video': data.get("control_video", None),
-            'camera_pose:
             # Please do not modify the following parameters
             # unless you clearly know what this will cause.
             "cfg_scale": 1,
