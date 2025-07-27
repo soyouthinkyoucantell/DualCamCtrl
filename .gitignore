@@ -7,3 +7,5 @@ output_rgb_crop/
 .vscode/
 __pycache__/
 camera_pose_viz/
+validation_videos/
+res/

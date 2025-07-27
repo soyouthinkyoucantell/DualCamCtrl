@@ -27,10 +27,10 @@ from .graphics_utils import (
 WARNED = False
 
 
-class Camera:
+class Pose:
     def __init__(self, K: np.ndarray, w2c: np.ndarray, image_name: str = "", image_path: str = "", width: int = 0, height: int = 0):
         assert K.shape == (3, 3), "K must be a 3x3 matrix"
-        assert w2c.shape == (3, 4), "w2c must be a 3x4 matrix"
+        assert w2c.shape == (4, 4), "w2c must be a 4x4 matrix"
 
         self.K = K
         self.fx = K[0, 0]
@@ -38,9 +38,7 @@ class Camera:
         self.cx = K[0, 2]
         self.cy = K[1, 2]
 
-        self.w2c_mat = np.eye(4)
-        self.w2c_mat[:3, :] = w2c
-
+        self.w2c_mat = w2c.copy()
         self.c2w_mat = np.linalg.inv(self.w2c_mat)
 
         self.image_name = image_name

@@ -80,7 +80,7 @@ pipe = WanVideoPipeline.from_pretrained(
     ],
 )
 pipe.enable_vram_management()
-num_inference_steps = 50
+num_inference_steps = 5
 
 # print(f"Loaded {len(input_video)} frames from video: {video_path}")
 # input_video = input_video[:81]
@@ -90,7 +90,7 @@ video = pipe(
     input_image=input_image,
     end_image=end_image,
     extra_images=extra_images,
-    extract_image_frame_index=extract_image_frame_index,
+    extra_image_frame_index=extract_image_frame_index,
     control_video=input_video[start_frame: end_frame + 1],
     # input_video=input_video,
     # camera_control_direction='Left',

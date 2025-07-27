@@ -1,4 +1,4 @@
-accelerate launch --config_file accelerate.yaml -m examples.wanvideo.model_training.train_with_accelerate \
+accelerate launch --num_processes 1 -m examples.wanvideo.model_training.train_with_accelerate \
   --dataset_base_path data/example_video_dataset \
   --dataset_metadata_path data/example_video_dataset/metadata.csv \
   --height 480 \
@@ -6,9 +6,9 @@ accelerate launch --config_file accelerate.yaml -m examples.wanvideo.model_train
   --dataset_repeat 100 \
   --model_id_with_origin_paths "PAI/Wan2.1-Fun-V1.1-1.3B-InP:diffusion_pytorch_model*.safetensors,PAI/Wan2.1-Fun-V1.1-1.3B-InP:models_t5_umt5-xxl-enc-bf16.pth,PAI/Wan2.1-Fun-V1.1-1.3B-InP:Wan2.1_VAE.pth,PAI/Wan2.1-Fun-V1.1-1.3B-InP:models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth" \
   --learning_rate 1e-5 \
-  --num_epochs 2 \
+  --num_epochs 100 \
   --remove_prefix_in_ckpt "pipe.dit." \
   --output_path "./models/train/Wan2.1-Fun-V1.1-1.3B-InP_full" \
   --trainable_models "dit" \
-  --validate_step 500 \
+  --validate_step 4 \
   --use_gradient_checkpointing

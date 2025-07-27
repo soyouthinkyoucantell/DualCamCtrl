@@ -1,6 +1,6 @@
-# from .....dataset.colmap_debug import Dataset
-# from ...dataset.colmap_debug import Dataset
 
+from accelerate.utils import set_seed
+from .args import wan_parser
 from ...dataset.colmap_debug import ScenesDataset
 import imageio
 import os
@@ -13,13 +13,29 @@ from peft import LoraConfig, inject_adapter_in_model
 from PIL import Image
 import pandas as pd
 from tqdm import tqdm
-from accelerate import Accelerator
+from accelerate import Accelerator, accelerator, DeepSpeedPlugin
 
 import torch
 import os
 import json
 from diffsynth.pipelines.wan_video_new_altered import WanVideoPipeline, ModelConfig
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+def get_data(data):
+    input_data = {
+        "height": data["images"][0].shape[-2],
+        "width": data["images"][0].shape[-1],
+        'input_video': data.get("images", None),
+        "num_frames": data["images"].shape[0],
+        'input_image': data.get("images")[:1],
+        'extra_images': data.get("extra_images", None),
+        'extra_image_frame_index': data.get("extra_image_frame_index", None),
+        'control_video': data.get("control", None),
+        'prompt': data.get("prompt", ''),
+        'plucker_embedding': data.get("camera_infos", None),
+    }
+    return input_data
 
 
 class DiffusionTrainingModule(torch.nn.Module):
@@ -88,6 +104,8 @@ class WanTrainingModule(DiffusionTrainingModule):
         self.pipe = WanVideoPipeline.from_pretrained(
             torch_dtype=torch.bfloat16, device="cpu", model_configs=model_configs)
 
+        print(f"dit data type : {self.pipe.dit.parameters().__next__().dtype}")
+
         # Reset training scheduler
         self.pipe.scheduler.set_timesteps(1000, training=True)
 
@@ -107,26 +125,32 @@ class WanTrainingModule(DiffusionTrainingModule):
         # Store other configs
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
+        print(f"Training Module initialized with the following configurations:")
+        print(
+            f"Using gradient checkpointing: {self.use_gradient_checkpointing}")
+        print(
+            f"Using gradient checkpointing offload: {self.use_gradient_checkpointing_offload}")
         self.extra_inputs = extra_inputs.split(
             ",") if extra_inputs is not None else []
 
     def forward_preprocess(self, data):
         # CFG-sensitive parameters
-        inputs_posi = {"prompt": data["prompt"]}
+        inputs_posi = {"prompt": data.get("prompt", ""), }
         inputs_nega = {}
 
         # CFG-unsensitive parameters
         inputs_shared = {
             # Assume you are using this pipeline for inference,
             # please fill in the input parameters.
-            # "input_video": data["video"],
-            "height": data["video"][0].size[1],
-            "width": data["video"][0].size[0],
-            "num_frames": len(data["video"]),
+            "height": data.get("height", None),
+            "width": data.get("width", None),
+            "input_video": data.get("input_video", None),
+            "num_frames": data.get("num_frames", 81),
             'input_image': data.get("input_image", None),
             'extra_images': data.get("extra_images", None),
             'extra_image_frame_index': data.get("extra_image_frame_index", None),
             'control_video': data.get("control_video", None),
+            'plucker_embedding': data.get("plucker_embedding"),
             # Please do not modify the following parameters
             # unless you clearly know what this will cause.
             "cfg_scale": 1,
@@ -138,19 +162,29 @@ class WanTrainingModule(DiffusionTrainingModule):
             "vace_scale": 1,
         }
 
-        # # Extra inputs
-        # for extra_input in self.extra_inputs:
-        #     if extra_input == "input_image":
-        #         inputs_shared["input_image"] = data["video"][0]
-        #     elif extra_input == "end_image":
-        #         inputs_shared["end_image"] = data["video"][-1]
-        #     else:
-        #         inputs_shared[extra_input] = data[extra_input]
-
         # Pipeline units will automatically process the input parameters.
         for unit in self.pipe.units:
+            # input("Press Enter to continue...")  # For debugging purposes
+            # print(f"Handling unit: {unit.__class__.__name__}")
             inputs_shared, inputs_posi, inputs_nega = self.pipe.unit_runner(
                 unit, self.pipe, inputs_shared, inputs_posi, inputs_nega)
+            # print(f"Device of text_encoder,dit,vae,image_encoder: "
+            #     f"{next(self.pipe.text_encoder.parameters()).device}, "
+            #     f"{next(self.pipe.dit.parameters()).device}, "
+            #     f"{next(self.pipe.vae.parameters()).device}, "
+            #     f"{next(self.pipe.image_encoder.parameters()).device}")
+            # print(
+            #     f"Noise shape: {inputs_shared['noise'].shape if 'noise' in inputs_shared else 'N/A'}")
+            # print(
+            #     f"Input latent shape: {inputs_shared['input_latents'].shape if 'input_latents' in inputs_shared else 'N/A'}")
+            # print(
+            #     f"Latent shape: {inputs_shared['latents'].shape if 'latents' in inputs_shared else 'N/A'}")
+            # print(
+            #     f"y shape: {inputs_shared['y'].shape if 'y' in inputs_shared else 'N/A'}")
+            # print(
+            #     f"control_latent shape: {inputs_shared['control_latent'].shape if 'control_latent' in inputs_shared else 'N/A'}")
+            # print(
+            #     f"plucker_embedding shape: {inputs_shared['plucker_embedding'].shape if 'plucker_embedding' in inputs_shared else 'N/A'}")
         return {**inputs_shared, **inputs_posi}
 
     def forward(self, data, inputs=None):
@@ -162,6 +196,72 @@ class WanTrainingModule(DiffusionTrainingModule):
         loss = self.pipe.training_loss(**models, **inputs)
         return loss
 
+    def validate(self, accelerator, global_step, test_dataloader=None):
+        # This method is a placeholder for validation logic.
+        # You can implement your validation logic here if needed.
+        import numpy as np
+        from typing import List, Optional
+        from PIL import Image
+        import cv2
+        import torch
+        from diffsynth import save_video
+        assert test_dataloader is not None, "Test dataloader must be provided for validation."
+
+        def read_video_as_pil_frames(video_path: str) -> Optional[List[Image.Image]]:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                print(f"Failed to open video: {video_path}")
+                return None
+
+            frames: List[Image.Image] = []
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                # OpenCV reads in BGR format, convert to RGB
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(frame_rgb)
+                frames.append(pil_img)
+
+            cap.release()
+            return frames
+
+        for idx, batch in enumerate(test_dataloader):
+            if idx >= 4:
+                break
+            # with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            with torch.no_grad():
+                input_data = get_data(batch)
+                # mask the video every 10 frames
+
+                video = self.pipe(
+                    prompt="清楚的，清晰的，明亮的，色调自然，色彩丰富，细节清晰，动态画面，动态视频，动态场景",
+                    negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
+                    # input_video = input_data['input_video'],
+                    input_image=input_data['input_image'],
+                    extra_images=input_data['extra_images'],
+                    extra_image_frame_index=input_data['extra_image_frame_index'],
+                    control_video=input_data['control_video'],
+                    seed=0,
+                    height=input_data['height'],
+                    width=input_data['width'],
+                    tiled=True,
+                    num_inference_steps=50,
+                    num_frames=input_data['num_frames'],
+                )
+                save_path = "validation_videos"
+                os.makedirs(save_path, exist_ok=True)
+
+                save_video(
+                    video,
+                    os.path.join(
+                        save_path,
+                        f"video_{idx}_step_{global_step}.mp4"
+                    ),
+                    fps=10,
+                    quality=5,
+                )
+
 
 class ModelLogger:
     def __init__(self, output_path, remove_prefix_in_ckpt=None, state_dict_converter=lambda x: x):
@@ -170,47 +270,154 @@ class ModelLogger:
         self.state_dict_converter = state_dict_converter
 
     def on_step_end(self, loss):
-        pass
+        print(
+            f"Step loss: {loss.mean().item() if isinstance(loss, torch.Tensor) else loss}")
 
-    def on_epoch_end(self, accelerator, model, epoch_id):
-        accelerator.wait_for_everyone()
+    def save_model_state(self, accelerator, model, epoch_id, global_step):
         if accelerator.is_main_process:
             state_dict = accelerator.get_state_dict(model)
             state_dict = accelerator.unwrap_model(model).export_trainable_state_dict(
                 state_dict, remove_prefix=self.remove_prefix_in_ckpt)
+            # print(f"state_dict keys: {list(state_dict.keys())}")
             state_dict = self.state_dict_converter(state_dict)
             os.makedirs(self.output_path, exist_ok=True)
             path = os.path.join(
-                self.output_path, f"epoch-{epoch_id}.safetensors")
+                self.output_path, f"epoch-{epoch_id}-step-{global_step}.safetensors")
             accelerator.save(state_dict, path, safe_serialization=True)
+        accelerator.wait_for_everyone()
+
+    def save_training_state(self, accelerator, epoch_id, global_step):
+        if accelerator.is_main_process:
+            accelerator.print("Saving training state...")
+            os.makedirs(self.output_path, exist_ok=True)
+            # save all internal states properly
+            accelerator.save_state(self.output_path)
+            # manually save extra info
+            torch.save(
+                {
+                    "epoch": epoch_id,
+                    "global_step": global_step
+                },
+                os.path.join(self.output_path, "meta_state.pt")
+            )
+        accelerator.wait_for_everyone()
+
+    def load_training_state(self, accelerator):
+        state_path = os.path.join(self.output_path, "meta_state.pt")
+        if os.path.exists(state_path):
+            accelerator.print(f"Loading training state from {state_path}")
+            accelerator.load_state(self.output_path)
+            meta = torch.load(state_path, map_location="cpu")
+            return meta["epoch"], meta["global_step"]
+        else:
+            accelerator.print(
+                f"No training state found at {state_path}. Starting from scratch.")
+            return 0, 0
+
+    def load_latest_model_weights(self,  model):
+        from safetensors.torch import load_file
+        if not os.path.exists(self.output_path):
+            print(
+                f"Output path {self.output_path} does not exist. Skipping loading weights.")
+            return
+        ckpts = sorted([
+            f for f in os.listdir(self.output_path)
+            if f.endswith(".safetensors")
+        ], reverse=True)
+        if not ckpts:
+            print(
+                f"No checkpoints found in {self.output_path}. Skipping loading weights.")
+            return
+        latest_ckpt = os.path.join(self.output_path, ckpts[0])
+        print(f"Loading model weights from {latest_ckpt}")
+        state_dict = load_file(latest_ckpt)
+        model.pipe.dit.load_state_dict(
+            state_dict, strict=True)
 
 
 def launch_training_task(
-    dataset: torch.utils.data.Dataset,
+    train_dataset: torch.utils.data.Dataset,
+    test_dataset: torch.utils.data.Dataset,
     model: DiffusionTrainingModule,
     model_logger: ModelLogger,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     num_epochs: int = 1,
+    validate_step: int = 500,
     gradient_accumulation_steps: int = 1,
 ):
-    dataloader = torch.utils.data.DataLoader(
-        dataset, shuffle=True, collate_fn=lambda x: x[0])
-    accelerator = Accelerator(
-        gradient_accumulation_steps=gradient_accumulation_steps)
-    model, optimizer, dataloader, scheduler = accelerator.prepare(
-        model, optimizer, dataloader, scheduler)
+    train_dataloader = torch.utils.data.DataLoader(
+        # Assuming dataset returns a dict
+        train_dataset, shuffle=True, batch_size=1, num_workers=2, collate_fn=lambda x: x[0], prefetch_factor=1, pin_memory=True
+    )
+    test_dataloader = torch.utils.data.DataLoader(
+        test_dataset, shuffle=False, batch_size=1, num_workers=2, collate_fn=lambda x: x[0], prefetch_factor=1, pin_memory=True
+    )
 
+    # deepspeed_plugin = DeepSpeedPlugin(
+    #     hf_ds_config='deepspeed.json'
+    # )
+    accelerator = Accelerator()
+
+    set_seed(42)
+
+    accelerator.print(
+        f"Initial accelerator with gradient accumulation steps: {gradient_accumulation_steps}")
+    accelerator.print(
+        f"Using {accelerator.num_processes} processes for training.")
+    accelerator.print(
+        f"Preparing model, optimizer, dataloader, and scheduler with accelerator.")
+    model, optimizer, train_dataloader, scheduler = accelerator.prepare(
+        model, optimizer, train_dataloader, scheduler
+    )
+    accelerator.print(
+        f"Model param dtype : {next(model.pipe.dit.parameters()).dtype}")
+
+    start_epoch, global_step = model_logger.load_training_state(
+        accelerator)
+    if global_step > 0:
+        accelerator.print(
+            f"Resuming training from epoch {start_epoch}, global step {global_step}")
+    accelerator.print(f"Validate every {validate_step} steps.")
+    # global_step = 0
     for epoch_id in range(num_epochs):
-        for data in tqdm(dataloader):
+        train_dataloader.set_epoch(epoch_id + start_epoch)
+        # model.validate(accelerator=accelerator, global_step=global_step)
+        for idx, data in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch_id + 1}/{num_epochs}")):
             with accelerator.accumulate(model):
+                input_data = get_data(data)
                 optimizer.zero_grad()
-                loss = model(data)
+                # accelerator.print(
+                #     f"Forward no. {idx + 1}/{len(train_dataloader)}")
+
+                # with accelerator.autocast():
+                loss = model(input_data)
+                # accelerator.print(
+                #     f"Backward no. {idx + 1}/{len(train_dataloader)}")
                 accelerator.backward(loss)
+
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(
+                        model.trainable_modules(), max_norm=1.0)
+                    global_step += 1
+                    if (global_step+validate_step) % validate_step == 1:
+                        model_logger.save_model_state(
+                            accelerator, model, epoch_id, global_step)
+                        model_logger.save_training_state(
+                            accelerator, epoch_id, global_step)
+                        accelerator.print(
+                            f"Checkpoint saved at step {global_step}")
+                        if accelerator.is_main_process:
+                            model.pipe.dit.eval()
+                            model.validate(
+                                accelerator=accelerator,
+                                global_step=global_step,
+                                test_dataloader=test_dataloader
+                            )
+                            model.pipe.dit.train()
+                        accelerator.wait_for_everyone()
                 optimizer.step()
-                model_logger.on_step_end(loss)
                 scheduler.step()
-        model_logger.on_epoch_end(accelerator, model, epoch_id)
 
 
 def launch_data_process_task(model: DiffusionTrainingModule, dataset, output_path="./models"):
@@ -228,104 +435,6 @@ def launch_data_process_task(model: DiffusionTrainingModule, dataset, output_pat
                 output_path, "data_cache", f"{data_id}.pth"))
 
 
-def wan_parser():
-    parser = argparse.ArgumentParser(
-        description="Simple example of a training script.")
-    parser.add_argument("--dataset_base_path", type=str, default="",
-                        required=True, help="Base path of the dataset.")
-    parser.add_argument("--dataset_metadata_path", type=str,
-                        default=None, help="Path to the metadata file of the dataset.")
-    parser.add_argument("--max_pixels", type=int, default=1280*720,
-                        help="Maximum number of pixels per frame, used for dynamic resolution..")
-    parser.add_argument("--height", type=int, default=None,
-                        help="Height of images or videos. Leave `height` and `width` empty to enable dynamic resolution.")
-    parser.add_argument("--width", type=int, default=None,
-                        help="Width of images or videos. Leave `height` and `width` empty to enable dynamic resolution.")
-    parser.add_argument("--num_frames", type=int, default=81,
-                        help="Number of frames per video. Frames are sampled from the video prefix.")
-    parser.add_argument("--data_file_keys", type=str, default="image,video",
-                        help="Data file keys in the metadata. Comma-separated.")
-    parser.add_argument("--dataset_repeat", type=int, default=1,
-                        help="Number of times to repeat the dataset per epoch.")
-    parser.add_argument("--model_paths", type=str, default=None,
-                        help="Paths to load models. In JSON format.")
-    parser.add_argument("--model_id_with_origin_paths", type=str, default=None,
-                        help="Model ID with origin paths, e.g., Wan-AI/Wan2.1-T2V-1.3B:diffusion_pytorch_model*.safetensors. Comma-separated.")
-    parser.add_argument("--learning_rate", type=float,
-                        default=1e-4, help="Learning rate.")
-    parser.add_argument("--num_epochs", type=int,
-                        default=1, help="Number of epochs.")
-    parser.add_argument("--output_path", type=str,
-                        default="./models", help="Output save path.")
-    parser.add_argument("--remove_prefix_in_ckpt", type=str,
-                        default="pipe.dit.", help="Remove prefix in ckpt.")
-    parser.add_argument("--trainable_models", type=str, default=None,
-                        help="Models to train, e.g., dit, vae, text_encoder.")
-    parser.add_argument("--lora_base_model", type=str,
-                        default=None, help="Which model LoRA is added to.")
-    parser.add_argument("--lora_target_modules", type=str,
-                        default="q,k,v,o,ffn.0,ffn.2", help="Which layers LoRA is added to.")
-    parser.add_argument("--lora_rank", type=int,
-                        default=32, help="Rank of LoRA.")
-    parser.add_argument("--extra_inputs", default=None,
-                        help="Additional model inputs, comma-separated.")
-    parser.add_argument("--use_gradient_checkpointing_offload", default=False,
-                        action="store_true", help="Whether to offload gradient checkpointing to CPU memory.")
-    parser.add_argument("--gradient_accumulation_steps",
-                        type=int, default=1, help="Gradient accumulation steps.")
-    return parser
-
-
-def flux_parser():
-    parser = argparse.ArgumentParser(
-        description="Simple example of a training script.")
-    parser.add_argument("--dataset_base_path", type=str, default="",
-                        required=True, help="Base path of the dataset.")
-    parser.add_argument("--dataset_metadata_path", type=str,
-                        default=None, help="Path to the metadata file of the dataset.")
-    parser.add_argument("--max_pixels", type=int, default=1024*1024,
-                        help="Maximum number of pixels per frame, used for dynamic resolution..")
-    parser.add_argument("--height", type=int, default=None,
-                        help="Height of images. Leave `height` and `width` empty to enable dynamic resolution.")
-    parser.add_argument("--width", type=int, default=None,
-                        help="Width of images. Leave `height` and `width` empty to enable dynamic resolution.")
-    parser.add_argument("--data_file_keys", type=str, default="image",
-                        help="Data file keys in the metadata. Comma-separated.")
-    parser.add_argument("--dataset_repeat", type=int, default=1,
-                        help="Number of times to repeat the dataset per epoch.")
-    parser.add_argument("--model_paths", type=str, default=None,
-                        help="Paths to load models. In JSON format.")
-    parser.add_argument("--model_id_with_origin_paths", type=str, default=None,
-                        help="Model ID with origin paths, e.g., Wan-AI/Wan2.1-T2V-1.3B:diffusion_pytorch_model*.safetensors. Comma-separated.")
-    parser.add_argument("--learning_rate", type=float,
-                        default=1e-4, help="Learning rate.")
-    parser.add_argument("--num_epochs", type=int,
-                        default=1, help="Number of epochs.")
-    parser.add_argument("--output_path", type=str,
-                        default="./models", help="Output save path.")
-    parser.add_argument("--remove_prefix_in_ckpt", type=str,
-                        default="pipe.dit.", help="Remove prefix in ckpt.")
-    parser.add_argument("--trainable_models", type=str, default=None,
-                        help="Models to train, e.g., dit, vae, text_encoder.")
-    parser.add_argument("--lora_base_model", type=str,
-                        default=None, help="Which model LoRA is added to.")
-    parser.add_argument("--lora_target_modules", type=str,
-                        default="q,k,v,o,ffn.0,ffn.2", help="Which layers LoRA is added to.")
-    parser.add_argument("--lora_rank", type=int,
-                        default=32, help="Rank of LoRA.")
-    parser.add_argument("--extra_inputs", default=None,
-                        help="Additional model inputs, comma-separated.")
-    parser.add_argument("--align_to_opensource_format", default=False, action="store_true",
-                        help="Whether to align the lora format to opensource format. Only for DiT's LoRA.")
-    parser.add_argument("--use_gradient_checkpointing", default=False,
-                        action="store_true", help="Whether to use gradient checkpointing.")
-    parser.add_argument("--use_gradient_checkpointing_offload", default=False,
-                        action="store_true", help="Whether to offload gradient checkpointing to CPU memory.")
-    parser.add_argument("--gradient_accumulation_steps",
-                        type=int, default=1, help="Gradient accumulation steps.")
-    return parser
-
-
 if __name__ == "__main__":
     parser = wan_parser()
     args = parser.parse_args()
@@ -338,22 +447,52 @@ if __name__ == "__main__":
         lora_base_model=args.lora_base_model,
         lora_target_modules=args.lora_target_modules,
         lora_rank=args.lora_rank,
+        use_gradient_checkpointing=args.use_gradient_checkpointing,
         use_gradient_checkpointing_offload=args.use_gradient_checkpointing_offload,
         extra_inputs=args.extra_inputs,
     )
+    print(f"Model data type : {model.pipe.dit.parameters().__next__().dtype}")
+    # print the module needs grads
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         print(f"{name} requires grad")
 
     model_logger = ModelLogger(
         args.output_path,
-        remove_prefix_in_ckpt=args.remove_prefix_in_ckpt
+        remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
+
     )
-    dataset = ScenesDataset(
+    # Default set the ratio that train test has no overlap.
+    train_ratio = 0.99
+    test_ratio = 1 - train_ratio
+
+    train_dataset = ScenesDataset(
+        relative_pose=True,
+        split='train',
+        ratio=train_ratio,
+        patch_size=[832, 480],  # W H
+    )
+    test_dataset = ScenesDataset(
+        relative_pose=True,
+        split='test',
+        ratio=test_ratio,
+        patch_size=[832, 480],  # W H
     )
 
     optimizer = torch.optim.AdamW(
         model.trainable_modules(), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
+    model_logger.load_latest_model_weights(model)
+    # model.pipe.enable_vram_management()
+
     launch_training_task(
-        dataset, model, model_logger, optimizer, scheduler,
+        train_dataset=train_dataset,
+        test_dataset=test_dataset,
+        model=model,
+        model_logger=model_logger,
+        optimizer=optimizer,
+        scheduler=scheduler,
         num_epochs=args.num_epochs,
+        validate_step=args.validate_step,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
     )

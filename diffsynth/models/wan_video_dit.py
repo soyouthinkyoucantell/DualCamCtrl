@@ -219,9 +219,11 @@ class SelfAttentionSeparate(nn.Module):
         self.k = nn.Linear(dim, dim)
         self.v = nn.Linear(dim, dim)
         self.o = nn.Linear(dim, dim)
+
         self.q_zl_before = nn.Linear(dim, dim, bias=False)
         self.k_zl_before = nn.Linear(dim, dim, bias=False)
         self.v_zl_before = nn.Linear(dim, dim, bias=False)
+
         self.q_zl_after = nn.Linear(dim, dim, bias=False)
         self.k_zl_after = nn.Linear(dim, dim, bias=False)
         self.v_zl_after = nn.Linear(dim, dim, bias=False)
@@ -281,6 +283,7 @@ class CrossAttentionSeparate(nn.Module):
         self.k = nn.Linear(dim, dim)
         self.v = nn.Linear(dim, dim)
         self.o = nn.Linear(dim, dim)
+
         self.q_zl_before = nn.Linear(dim, dim, bias=False)
         # self.k_zl_before = nn.Linear(dim, dim, bias=False)
         # self.v_zl_before = nn.Linear(dim, dim, bias=False)
@@ -1008,6 +1011,19 @@ class WanControlNet(WanModel):
             [nn.Linear(dim, dim, bias=False)
              for _ in range(self.num_pose_blocks)]
         )
+        # print the param of each first child of the whole contorlnet
+        _child_model = {
+            'pose_encoder': self.pose_encoder,
+            'control_blocks': self.control_blocks,
+            'control_zero_inits': self.control_zero_inits,
+            'camera_zero_inits': self.camera_zero_inits,
+            'blocks': self.blocks,
+        }
+
+        for name, child in _child_model.items():
+            param_count = sum(p.numel() for p in child.parameters())
+            print(
+                f"Module '{name}' ({child.__class__.__name__}) has {param_count} parameters.")
 
     def alter_camera_blocks(self):
         for idx, block in enumerate(self.blocks):
@@ -1056,17 +1072,25 @@ class WanControlNet(WanModel):
         self, x: torch.Tensor, control_camera_latents_input: torch.Tensor = None
     ):
         # print(f"x shape before patch embedding: {x.shape}")
+        # print(f"X dtype {x.dtype}")
+        # print(
+        #     f"patch_embedding dtype {next(self.patch_embedding.parameters()).dtype}")
         x = self.patch_embedding(x)
+        # print(f"x dtype ")
         # print(f"x shape after patch embedding: {x.shape}")
         if (
             self.control_adapter is not None
             and control_camera_latents_input is not None
         ):
+            # print(
+            #     f"Camera control input shape: {control_camera_latents_input.shape}")
 
             y_camera = self.control_adapter(control_camera_latents_input)
             x = [u + v for u, v in zip(x, y_camera)]
             x = x[0].unsqueeze(0)
         grid_size = x.shape[2:]
+        # print(f"Grid size after patch embedding: {grid_size}")
+
         x = rearrange(x, "b c f h w -> b (f h w) c").contiguous()
         return x, grid_size  # x, grid_size: (f, h, w)
 
@@ -1139,9 +1163,6 @@ class WanControlNet(WanModel):
             if idx in self.camera_inject_blocks:
                 _pose_embeddings = pose_embeddings[idx -
                                                    self.camera_inject_blocks[0]]
-                # if _pose_embeddings.ndim == 4:
-                #     _pose_embeddings = rearrange(
-                #         _pose_embeddings, 'b c h w -> b (h w) c')
             else:
                 _pose_embeddings = None
             # Control branch
@@ -1160,6 +1181,8 @@ class WanControlNet(WanModel):
                                 use_reentrant=False,
                             )
                     else:
+                        print(
+                            f"using gradient checkpointing for control block {idx}")
                         control_video = torch.utils.checkpoint.checkpoint(
                             create_custom_forward(self.control_blocks[idx]),
                             control_latents,
@@ -1198,7 +1221,8 @@ class WanControlNet(WanModel):
                         use_reentrant=False,
                     )
             else:
-                x = block(x, context, t_mod, freqs,camera_pose_embedding=_pose_embeddings)
+                x = block(x, context, t_mod, freqs,
+                          camera_pose_embedding=_pose_embeddings)
 
         x = self.head(x, t)
         x = self.unpatchify(x, (f, h, w))
