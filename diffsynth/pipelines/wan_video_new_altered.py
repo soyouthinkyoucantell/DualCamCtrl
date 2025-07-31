@@ -599,6 +599,7 @@ class WanVideoPipeline(BasePipeline):
 
     @staticmethod
     def from_pretrained(
+        config_path,
         torch_dtype: torch.dtype = torch.bfloat16,
         device: Union[str, torch.device] = "cuda",
         model_configs: list[ModelConfig] = [],
@@ -662,10 +663,10 @@ class WanVideoPipeline(BasePipeline):
         from omegaconf import OmegaConf
         # print(f"Dit dtype {next(iter(pipe.dit.parameters())).dtype}")
         conf = OmegaConf.load(
-            "/hpc2hdd/home/hongfeizhang/hongfei_workspace/DiffSynth-Studio/controlnet_config.yaml"
+            config_path
         )
         controlnet = WanControlNet(
-            **conf).to(dtype=next(iter(pipe.dit.parameters())).dtype)
+            **conf['dit'], **conf).to(dtype=next(iter(pipe.dit.parameters())).dtype)
 
         state = controlnet.load_state_dict(pipe.dit.state_dict(), strict=False)
         print(f"Controlnet dtype {next(iter(controlnet.parameters())).dtype}")
@@ -856,9 +857,9 @@ class WanVideoPipeline(BasePipeline):
         self.load_models_to_device(self.in_iteration_models)
         models = {name: getattr(self, name)
                   for name in self.in_iteration_models}
-        print(
-            f"Models loaded to device: {[models[name].__class__.__name__ for name in models]}"
-        )
+        # print(
+        #     f"Models loaded to device: {[models[name].__class__.__name__ for name in models]}"
+        # )
 
         for progress_id, timestep in enumerate(
             progress_bar_cmd(self.scheduler.timesteps)
@@ -1192,7 +1193,7 @@ class WanVideoUnit_ImageEmbedder(PipelineUnit):
             )
         # print(f"extra images len:{len(extra_images)}")
         # print(f"extra images index: {extra_image_frame_index}")
-        if extra_images is not None and len(extra_image_frame_index) > 0:
+        if extra_images is not None and extra_image_frame_index is not None and len(extra_image_frame_index) > 0:
             assert len(extra_image_frame_index) == len(extra_images)
             for idx, image in zip(extra_image_frame_index, extra_images):
 
@@ -1928,37 +1929,32 @@ def model_fn_wan_video(
                 return module(*inputs, **kwargs)
             return custom_forward
 
-        # Control camera latents
-        # control_camera_latents_input = torch.zeros(
-        #     (c_b,  6, c_f, (c_h*8), (c_w*8)), dtype=x.dtype, device=x.device
-        # )
-        # print(
-        #     f"plucker embedding shape: {plucker_embedding.shape if plucker_embedding is not None else 'N/A'}")
         pose_embeddings = torch.utils.checkpoint.checkpoint(
             create_custom_forward(dit.pose_encoder),
             plucker_embedding,
             use_reentrant=False,
         )
-        # print(
-        #     f"pose embeddings shape: {[pose_embedding.shape for pose_embedding in pose_embeddings]}")
-        # print(f"Latent shape before blocks: {x.shape}")
+        assert (len(pose_embeddings) == dit.fuse_blocks)
+        # print(f"Pose embeddings length: {len(pose_embeddings)}")
         for idx, block in enumerate(dit.blocks):
 
             # Take the pose embedding for the current block
             if idx in dit.camera_inject_blocks:
-                _pose_embeddings = pose_embeddings[idx -
-                                                   dit.camera_inject_blocks[0]]
+                bucket_idx = idx // dit.cover_base  # Find the bucket you should choose
+                # print(f"For block {idx}, using bucket index {bucket_idx}.")
+                _pose_embeddings = pose_embeddings[bucket_idx]
             else:
                 _pose_embeddings = None
 
             # Control blocks
-            if idx < dit.num_control_block:
+            if idx in dit.control_block_index:
+                block_id = dit.control_block_index.index(idx)
                 control_latents = control_latents + x
                 if use_gradient_checkpointing_offload:
                     with torch.autograd.graph.save_on_cpu():
                         control_latents = torch.utils.checkpoint.checkpoint(
                             create_custom_forward(
-                                dit.control_blocks[idx]),
+                                dit.control_blocks[block_id]),
                             control_latents,
                             context,
                             t_mod,
@@ -1967,7 +1963,7 @@ def model_fn_wan_video(
                         )
                 elif use_gradient_checkpointing:
                     control_latents = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(dit.control_blocks[idx]),
+                        create_custom_forward(dit.control_blocks[block_id]),
                         control_latents,
                         context,
                         t_mod,
@@ -1975,10 +1971,13 @@ def model_fn_wan_video(
                         use_reentrant=False,
                     )
                 else:
-                    control_latents = dit.control_blocks[idx](
+                    control_latents = dit.control_blocks[block_id](
                         control_latents, context, t_mod, freqs
                     )
-                x = x + dit.control_zero_inits[idx](control_latents)
+                x = x + dit.control_zero_inits[block_id](control_latents)
+            # else:
+            #     print(
+            #         f"No control block found for index {idx}, skipping control block.")
 
             # Main blocks
             if use_gradient_checkpointing_offload:

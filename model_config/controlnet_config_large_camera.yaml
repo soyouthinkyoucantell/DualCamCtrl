@@ -1,0 +1,50 @@
+dit:
+  dim: 1536
+  in_dim: 36
+  ffn_dim: 8960
+  out_dim: 16
+  text_dim: 4096
+  freq_dim: 256
+  eps: 1e-6
+  patch_size: [1, 2, 2]
+  num_heads: 12
+  num_layers: 30
+  has_image_input: true
+  text_len: 512
+  in_dim_control_adapter: 24
+  # extra param
+  control_block_index: []
+  camera_inject_blocks:
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+  cover_base: 5
+  # <0 to not using lora
+  camera_lora_rank: -1
+pose_encoder:
+  downscale_factor: 8
+  channels: 1536
+  model_embed: 1536
+  nums_rb: 3
+  cin: 1536
+  ksize: 1
+  sk: true
+  use_conv: false
+  temporal_attention_nhead: 8
+  attention_block_types: ["Temporal_Self"]
+  temporal_position_encoding: False
+  temporal_position_encoding_max_len: 16
+  rescale_output_factor: 1.0
+
+  # downscale_factor: 8
+  # channels: 1536
+  # model_embed: 1536
+  # fuse_blocks: 3
+  # nums_rb: 3
+  # cin: 1536
+  # ksize: 3
+  # sk: False
+  # use_conv: True
+  # temporal_attention_nhead: 8
+  # attention_block_types: ["Temporal_Self"]
+  # temporal_position_encoding: False
+  # temporal_position_encoding_max_len: 16
+  # rescale_output_factor: 1.0

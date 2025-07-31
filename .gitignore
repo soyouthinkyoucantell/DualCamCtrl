@@ -9,3 +9,4 @@ __pycache__/
 camera_pose_viz/
 validation_videos/
 res/
+video/

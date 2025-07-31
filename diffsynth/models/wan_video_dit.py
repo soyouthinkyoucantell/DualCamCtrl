@@ -1,3 +1,4 @@
+from diffusers.models.lora import LoRALinearLayer
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -209,7 +210,7 @@ class CrossAttention(nn.Module):
 
 
 class SelfAttentionSeparate(nn.Module):
-    def __init__(self, dim: int, num_heads: int, eps: float = 1e-6):
+    def __init__(self, dim: int, num_heads: int, eps: float = 1e-6, rank=64):
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
@@ -219,14 +220,24 @@ class SelfAttentionSeparate(nn.Module):
         self.k = nn.Linear(dim, dim)
         self.v = nn.Linear(dim, dim)
         self.o = nn.Linear(dim, dim)
+        if rank > 0:
+            # LoraLinear
+            self.q_zl_before = LoRALinearLayer(dim, dim, rank=rank)
+            self.k_zl_before = LoRALinearLayer(dim, dim,  rank=rank)
+            self.v_zl_before = LoRALinearLayer(dim, dim,  rank=rank)
 
-        self.q_zl_before = nn.Linear(dim, dim, bias=False)
-        self.k_zl_before = nn.Linear(dim, dim, bias=False)
-        self.v_zl_before = nn.Linear(dim, dim, bias=False)
+            self.q_zl_after = LoRALinearLayer(dim, dim,  rank=rank)
+            self.k_zl_after = LoRALinearLayer(dim, dim, rank=rank)
+            self.v_zl_after = LoRALinearLayer(dim, dim,  rank=rank)
+        else:
+            # Normal Linear
+            self.q_zl_before = nn.Linear(dim, dim)
+            self.k_zl_before = nn.Linear(dim, dim)
+            self.v_zl_before = nn.Linear(dim, dim)
 
-        self.q_zl_after = nn.Linear(dim, dim, bias=False)
-        self.k_zl_after = nn.Linear(dim, dim, bias=False)
-        self.v_zl_after = nn.Linear(dim, dim, bias=False)
+            self.q_zl_after = nn.Linear(dim, dim)
+            self.k_zl_after = nn.Linear(dim, dim)
+            self.v_zl_after = nn.Linear(dim, dim)
 
         self.norm_q = RMSNorm(dim, eps=eps)
         self.norm_k = RMSNorm(dim, eps=eps)
@@ -272,7 +283,7 @@ class SelfAttentionSeparate(nn.Module):
 
 class CrossAttentionSeparate(nn.Module):
     def __init__(
-        self, dim: int, num_heads: int, eps: float = 1e-6, has_image_input: bool = False
+        self, dim: int, num_heads: int, eps: float = 1e-6, has_image_input: bool = False, rank=64
     ):
         super().__init__()
         self.dim = dim
@@ -284,12 +295,15 @@ class CrossAttentionSeparate(nn.Module):
         self.v = nn.Linear(dim, dim)
         self.o = nn.Linear(dim, dim)
 
-        self.q_zl_before = nn.Linear(dim, dim, bias=False)
-        # self.k_zl_before = nn.Linear(dim, dim, bias=False)
-        # self.v_zl_before = nn.Linear(dim, dim, bias=False)
-        self.q_zl_after = nn.Linear(dim, dim, bias=False)
-        # self.k_zl_after = nn.Linear(dim, dim, bias=False)
-        # self.v_zl_after = nn.Linear(dim, dim, bias=False)
+        if rank > 0:
+            # LoraLinear
+            self.q_zl_before = LoRALinearLayer(dim, dim,  rank=rank)
+            self.q_zl_after = LoRALinearLayer(dim, dim,  rank=rank)
+        else:
+            # Normal linear
+            self.q_zl_before = nn.Linear(dim, dim, bias=False)
+            self.q_zl_after = nn.Linear(dim, dim, bias=False)
+
         self.norm_q = RMSNorm(dim, eps=eps)
         self.norm_k = RMSNorm(dim, eps=eps)
         self.has_image_input = has_image_input
@@ -396,15 +410,17 @@ class CameraDiTBlock(nn.Module):
         num_heads: int,
         ffn_dim: int,
         eps: float = 1e-6,
+        camera_lora_rank=64
     ):
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
         self.ffn_dim = ffn_dim
 
-        self.self_attn = SelfAttentionSeparate(dim, num_heads, eps)
+        self.self_attn = SelfAttentionSeparate(
+            dim, num_heads, eps, rank=camera_lora_rank)
         self.cross_attn = CrossAttentionSeparate(
-            dim, num_heads, eps, has_image_input=has_image_input
+            dim, num_heads, eps, has_image_input=has_image_input, rank=camera_lora_rank
         )
         self.norm1 = nn.LayerNorm(dim, eps=eps, elementwise_affine=False)
         self.norm2 = nn.LayerNorm(dim, eps=eps, elementwise_affine=False)
@@ -942,15 +958,21 @@ class WanControlNet(WanModel):
         text_dim: int,
         freq_dim: int,
         eps: float,
+
         patch_size: Tuple[int, int, int],
         num_heads: int,
         num_layers: int,
         has_image_input: bool,
+
+        control_block_index,
+        cover_base,
+        camera_lora_rank,
+
+
         has_image_pos_emb: bool = False,
         has_ref_conv: bool = False,
         add_control_adapter: bool = False,
         in_dim_control_adapter: int = 24,
-        num_control_block=12,
         camera_inject_blocks=[12, 13, 14, 15, 16],
         ** kwargs,
     ):
@@ -973,50 +995,61 @@ class WanControlNet(WanModel):
         )
         # This model is initialized with extra kwargs: {'has_image_input': True, 'patch_size': [1, 2, 2], 'in_dim': 36, 'dim': 1536, 'ffn_dim': 8960, 'freq_dim': 256, 'text_dim': 4096, 'out_dim': 16, 'num_heads': 12, 'num_layers': 30, 'eps': 1e-06}
         #
-        print(
-            f"Initializing WanControlNet with num_control_block: {num_control_block}")
 
         self.camera_has_image_input = has_image_input
         self.camera_dim = dim
         self.camera_num_heads = num_heads
         self.camera_ffn_dim = ffn_dim
         self.eps = eps
-        self.num_control_block = num_control_block
+        self.cover_base = cover_base
+        self.fuse_blocks = -(-len(camera_inject_blocks)//cover_base)
         self.num_pose_blocks = len(camera_inject_blocks)
         self.camera_inject_blocks = camera_inject_blocks
+        self.camera_lora_rank = camera_lora_rank
         # Camera pose encoder
+        print(f"Init CameraPoseEncoder with kwargs: {kwargs['pose_encoder']}")
         self.pose_encoder = CameraPoseEncoder(
-            model_embed=dim,
-            fuse_blocks=self.num_pose_blocks,
+            **kwargs['pose_encoder'],
+            fuse_blocks=self.fuse_blocks,
         )
 
-        # Control blocks
-        self.control_blocks = nn.ModuleList(
-            [
-                DiTBlock(
-                    has_image_input=has_image_input,
-                    dim=dim,
-                    num_heads=num_heads,
-                    ffn_dim=ffn_dim,
-                    eps=eps,
-                )
-                for _ in range(num_control_block)
-            ]
-        )
+        self.control_block_index = control_block_index
+        num_control_block = len(self.control_block_index)
+        if num_control_block >= 0:
+            print(
+                f"Using {num_control_block} control blocks, for layers {self.control_block_index}")
+            # Control blocks
+            self.control_blocks = nn.ModuleList(
+                [
+                    DiTBlock(
+                        has_image_input=has_image_input,
+                        dim=dim,
+                        num_heads=num_heads,
+                        ffn_dim=ffn_dim,
+                        eps=eps,
+                    )
+                    for _ in range(num_control_block)
+                ]
+            )
+            self.control_zero_inits = nn.ModuleList(
+                [nn.Linear(dim, dim, bias=False)
+                 for _ in range(num_control_block)]
+            )
+        else:
+            print(
+                f"No control blocks used, control_block_index is empty: {control_block_index}")
+            self.control_blocks = None
 
-        self.control_zero_inits = nn.ModuleList(
-            [nn.Linear(dim, dim, bias=False) for _ in range(num_control_block)]
-        )
-        self.camera_zero_inits = nn.ModuleList(
-            [nn.Linear(dim, dim, bias=False)
-             for _ in range(self.num_pose_blocks)]
-        )
+        # self.camera_zero_inits = nn.ModuleList(
+        #     [nn.Linear(dim, dim, bias=False)
+        #      for _ in range(self.num_pose_blocks)]
+        # )
         # print the param of each first child of the whole contorlnet
         _child_model = {
             'pose_encoder': self.pose_encoder,
             'control_blocks': self.control_blocks,
             'control_zero_inits': self.control_zero_inits,
-            'camera_zero_inits': self.camera_zero_inits,
+            # 'camera_zero_inits': self.camera_zero_inits,
             'blocks': self.blocks,
         }
 
@@ -1028,7 +1061,7 @@ class WanControlNet(WanModel):
     def alter_camera_blocks(self):
         for idx, block in enumerate(self.blocks):
             if idx in self.camera_inject_blocks:
-                print(f"Injecting camera control into block {idx}")
+                # print(f"Injecting camera control into block {idx}")
                 layer_state_state = block.state_dict()
                 self.blocks[idx] = CameraDiTBlock(
                     has_image_input=self.camera_has_image_input,
@@ -1036,37 +1069,47 @@ class WanControlNet(WanModel):
                     num_heads=self.camera_num_heads,
                     ffn_dim=self.camera_ffn_dim,
                     eps=self.eps,
+                    camera_lora_rank=self.camera_lora_rank,
                 )
-                print(f"Loading state dict for camera block {idx}")
+                # print(f"Loading state dict for camera block {idx}")
                 state = self.blocks[idx].load_state_dict(
                     layer_state_state, strict=False)
-                print(
-                    f"Keys not found in camera block: {state.missing_keys} for camera block {idx}")
+                # print(
+                #     f"Keys not found in camera block: {state.missing_keys} for camera block {idx}")
+        print(
+            f"After alternation, blocks params:{sum(p.numel() for p in self.blocks.parameters())}")
+        print(
+            f"Total param of the model : {sum(p.numel() for p in self.parameters())}")
 
     def copy_weights_from_main_branch(self):
+        if self.control_blocks is None:
+            return
         for idx, block in enumerate(self.blocks):
-            if idx < self.num_control_block:
-                print(
-                    f"Copying weights from main branch to control block {idx}")
-
-                state = self.control_blocks[idx].load_state_dict(
+            if idx in self.control_block_index:
+                # print(
+                #     f"Copying weights from main branch to control block {idx}")
+                c_block_id = self.control_block_index.index(idx)
+                state = self.control_blocks[c_block_id].load_state_dict(
                     block.state_dict())
-                print(
-                    f"Keys not found in origin block: {state.missing_keys} for block {idx}"
-                )
+                # print(
+                #     f"Keys not found in origin block: {state.missing_keys} for block {idx}"
+                # )
+
+        print(f"Finished copying weights from main branch to control blocks.")
 
     def zero_init_linear(self):
-        for idx, block in enumerate(self.control_blocks):
-            # print(f"Zero init control block {idx}")
-            self.control_zero_inits[idx].weight.data.zero_()
-            if self.control_zero_inits[idx].bias is not None:
-                self.control_zero_inits[idx].bias.data.zero_()
+        if self.control_blocks is not None:
+            for idx, block in enumerate(self.control_blocks):
+                # print(f"Zero init control block {idx}")
+                self.control_zero_inits[idx].weight.data.zero_()
+                if self.control_zero_inits[idx].bias is not None:
+                    self.control_zero_inits[idx].bias.data.zero_()
 
-        for block in self.camera_zero_inits:
-            # print(f"Zero init camera block")
-            block.weight.data.zero_()
-            if block.bias is not None:
-                block.bias.data.zero_()
+        # for block in self.camera_zero_inits:
+        #     # print(f"Zero init camera block")
+        #     block.weight.data.zero_()
+        #     if block.bias is not None:
+        #         block.bias.data.zero_()
 
     def patchify(
         self, x: torch.Tensor, control_camera_latents_input: torch.Tensor = None

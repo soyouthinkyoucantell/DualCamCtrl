@@ -47,6 +47,8 @@ extra_frame_idx = list(range(5, 33))  # Indices of extra frames to be used
 extract_image_frame_index = extra_frame_idx.copy()
 extra_images = [input_video[i] for i in extract_image_frame_index]
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
 print(f"Shape of input image: {input_image.size}, end image: {end_image.size}")
 print(
     f"Shape of input video: {len(input_video)} frames, first frame size: {input_video[0].size}"
@@ -78,9 +80,11 @@ pipe = WanVideoPipeline.from_pretrained(
             offload_device="cpu",
         ),
     ],
+    config_path='/hpc2hdd/home/hongfeizhang/hongfei_workspace/DiffSynth-Studio/model_config/controlnet_config.yaml'
 )
-pipe.enable_vram_management()
+# pipe.enable_vram_management()
 num_inference_steps = 5
+pipe.to(device)
 
 # print(f"Loaded {len(input_video)} frames from video: {video_path}")
 # input_video = input_video[:81]
@@ -101,6 +105,7 @@ video = pipe(
     num_inference_steps=num_inference_steps,
     num_frames=end_frame - start_frame + 1,
 )
+
 save_video(
     video,
     f"video_{start_frame}_{end_frame}_extra_{extract_image_frame_index[0]}-{extract_image_frame_index[-1]}_{'origin' if origin else 'fake'}_{num_inference_steps}_steps.mp4",

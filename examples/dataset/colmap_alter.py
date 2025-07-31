@@ -193,9 +193,14 @@ class Parser:
             imsize_dict[camera_id] = (
                 cam.width // factor, cam.height // factor)
             mask_dict[camera_id] = None
+        # print(
+        #     f"[Parser] {len(imdata)} images, taken by {len(set(camera_ids))} cameras."
+        # )
 
         if len(imdata) == 0:
             raise ValueError("No images found in COLMAP.")
+        # if not (type_ == 0 or type_ == 1):
+        #     print("Warning: COLMAP Camera is not PINHOLE. Images have distortion.")
 
         w2c_mats = np.stack(w2c_mats, axis=0)
 
@@ -278,12 +283,11 @@ class Parser:
             # print(f"Transformed camtoworlds:\n{camtoworlds}")
             points = transform_points(T1, points)
 
-            # T2 = align_principle_axes(points)
-            # camtoworlds = transform_cameras(T2, camtoworlds)
-            # points = transform_points(T2, points)
+            T2 = align_principle_axes(points)
+            camtoworlds = transform_cameras(T2, camtoworlds)
+            points = transform_points(T2, points)
 
-            # transform = T2 @ T1
-            transform = T1
+            transform = T2 @ T1
         else:
             transform = np.eye(4)
 
@@ -392,29 +396,16 @@ class Parser:
         self.scene_scale = np.max(dists)
 
 
-class ScenesDataset(Dataset):
+class ScenesDataset_Alter(Dataset):
     """A simple dataset class."""
 
     def __init__(
         self,
-        no_extra_frame=False,
-        max_frame=81,
-        min_frame=21,
         relative_pose=True,
         split='train',
         ratio=0.99,
-        patch_size: Optional[List[int]] = [720, 480],  # W H
+        patch_size: Optional[List[int]] = [832, 480],  # W H
     ):
-        self.no_extra_frame = no_extra_frame
-        self.max_frame = max_frame
-        self.min_frame = min_frame
-        print(f"Frame range: {self.min_frame} to {self.max_frame}")
-        if self.no_extra_frame:
-            print(
-                "Info: no_extra_frame is set to True, extra_images and extra_image_frame_index will be None.")
-        else:
-            print(
-                "Info: no_extra_frame is set to False, extra_images and extra_image_frame_index will be used.")
         self.split = split
         with open(meta_json, 'r') as f:
             meta_paths = f.readlines()
@@ -463,12 +454,17 @@ class ScenesDataset(Dataset):
     def __getitem__(
         self,
         idx,
+        sample_step,
+        frame_length,
+        validate_step,
+
     ):
-        # print(f"Loading scene {idx}...")
         scene_num = len(self.meta_paths)
         idx = (idx+scene_num) % scene_num
         meta_path = self.meta_paths[idx]
         try:
+            assert (frame_length +
+                    4) % 4 == 1, f"Frame length {frame_length} should be 4n+1."
             # print(f"Loading scene {idx} from {meta_path}")
             parsing_file_path = os.path.dirname(meta_path)
             # print(f"Parsing file path: {parsing_file_path}")
@@ -478,46 +474,11 @@ class ScenesDataset(Dataset):
             if total_frames < 21:
                 raise ValueError(
                     f"Total frames {total_frames} is less than 21, cannot sample trajectory.")
-
-            # possible_lengths = list(range(21, 81+1, 4))
-            # possible_lengths = [13:65]
-            possible_lengths = list(range(
-                self.min_frame, self.max_frame + 1, 4))  # [21, 25, ..., 81]
-            sample_steps = [
-                1,
-                2,
-                3,
-                4,
-                5,
-                6
-            ]
-
             # print(f"Randoming sample step and length for scene {idx}...")
-            if self.split == 'train':
-                required_frames = 0x3f3f3f
-                max_trys = 100
-                _try_times = 0
-                chosen_length = np.random.choice(possible_lengths)
-                while required_frames > total_frames:
-                    _try_times += 1
-                    if _try_times > max_trys:
-                        sample_step = 1
-                        indices = np.arange(
-                            0, (self.min_frame - 1) * sample_step + 1, sample_step)
-                        break
-                    sample_step = np.random.choice(sample_steps)
-                    required_frames = (chosen_length - 1) * sample_step + 1
-                    # print(
-                    #     f"Required frames: {required_frames}, Total frames: {total_frames}, Sample step: {sample_step}")
-                start = np.random.randint(
-                    0, total_frames - required_frames + 1)
-                indices = np.arange(
-                    start, start + required_frames, sample_step)
-            else:
-                # 验证阶段默认固定长度和步长
-                sample_step = 4
-                indices = np.arange(0, (self.min_frame - 1)
-                                    * sample_step + 1, sample_step)
+
+            # 验证阶段默认固定长度和步长
+            indices = np.arange(0, (frame_length - 1) *
+                                sample_step + 1, sample_step)
 
             # print(f"Generated trajectory...")
             # TODO
@@ -562,76 +523,34 @@ class ScenesDataset(Dataset):
                 'camera_infos': plucker_embedding.permute(1, 0, 2, 3)
             }
 
-            if self.no_extra_frame:
-                data_dict['extra_images'] = None
-                data_dict['extra_image_frame_index'] = None
-            elif self.split == 'train':
-                # Number of frames
-                num_frames = len(data_list)
+            # Number of frames
+            num_frames = len(data_list)
 
-                # Initialize valid mask (first frame is always valid, subsequent frames have 0.2 probability of being active)
-                valid_mask = torch.ones(num_frames, dtype=torch.bool)
-                possibility_deactivate_list = [0.02, 0.05, 0.1]
-                deactivate_prob = random.choice(
-                    possibility_deactivate_list)
-                valid_mask[1:] = torch.rand(num_frames - 1) < deactivate_prob
+            # Initialize valid mask (every 5th frame is active, others are inactive)
+            valid_mask = torch.zeros(num_frames, dtype=torch.bool)
+            # Every 10th frame is valid, starting from the 5th frame
+            valid_mask[validate_step-1::validate_step] = True
 
-                # Create the 'extra_images' and 'extra_image_frame_index' based on the valid mask
-                # Select valid images based on the mask
-                extra_images = data_dict['images'][valid_mask]
-                extra_image_frame_index = torch.nonzero(
-                    valid_mask, as_tuple=False).squeeze()  # Get indices of valid frames
-                if extra_image_frame_index.ndim == 0:
-                    data_dict['extra_images'] = None
-                    data_dict['extra_image_frame_index'] = None
-                else:
-                    # Remove the first frame from extra_images and extra_image_frame_index
-                    extra_images = extra_images[1:]  # Skip the first frame
-                    # Skip the first frame's index
-                    extra_image_frame_index = extra_image_frame_index[1:]
+            # Create the 'extra_images' and 'extra_image_frame_index' based on the valid mask
+            # Select valid images based on the mask
+            extra_images = data_dict['images'][valid_mask]
+            extra_image_frame_index = torch.nonzero(
+                valid_mask, as_tuple=False).squeeze()  # Get indices of valid frames
 
-                    # Add the 'extra_images' and 'extra_image_frame_index' to the data_dict
-                    data_dict['extra_images'] = extra_images
-                    data_dict['extra_image_frame_index'] = extra_image_frame_index
+            # Remove the first frame from extra_images and extra_image_frame_index
+            extra_images = extra_images[1:]  # Skip the first frame
+            # Skip the first frame's index
+            extra_image_frame_index = extra_image_frame_index[1:]
 
-            elif self.split == 'test':
-                # Number of frames
-                num_frames = len(data_list)
-
-                # Initialize valid mask (every 5th frame is active, others are inactive)
-                valid_mask = torch.zeros(num_frames, dtype=torch.bool)
-                # Every
-                frame_deacivate = 20
-                assert frame_deacivate > 2
-                valid_mask[frame_deacivate-1::frame_deacivate] = True
-
-                # Create the 'extra_images' and 'extra_image_frame_index' based on the valid mask
-                # Select valid images based on the mask
-                extra_images = data_dict['images'][valid_mask]
-                extra_image_frame_index = torch.nonzero(
-                    valid_mask, as_tuple=False).squeeze()  # Get indices of valid frames
-                # print(
-                #     f"Extra images shape: {extra_images.shape}, extra_image_frame_index shape: {extra_image_frame_index.shape}")
-                # print(f"extra index ndim: {extra_image_frame_index.ndim}")
-                if extra_image_frame_index.ndim == 0:
-                    data_dict['extra_images'] = None
-                    data_dict['extra_image_frame_index'] = None
-                else:
-                    # Remove the first frame from extra_images and extra_image_frame_index
-                    extra_images = extra_images[1:]  # Skip the first frame
-                    # Skip the first frame's index
-                    extra_image_frame_index = extra_image_frame_index[1:]
-
-                    # Add the 'extra_images' and 'extra_image_frame_index' to the data_dict
-                    data_dict['extra_images'] = extra_images
-                    data_dict['extra_image_frame_index'] = extra_image_frame_index
-        # print(
-        #     f"return data with video shape: {data_dict['images'].shape}")
-
+            # Add the 'extra_images' and 'extra_image_frame_index' to the data_dict
+            data_dict['extra_images'] = extra_images
+            data_dict['extra_image_frame_index'] = extra_image_frame_index
+            # print(
+            #     f"return data with video shape: {data_dict['images'].shape}")
             return data_dict
         except Exception as e:
-            # print(
-            #     f"Error loading scene {idx} from {meta_path}: {e}, loading next scene")
+            print(
+                f"Error loading scene {idx} from {meta_path}: {e}, loading next scene")
             return self.__getitem__((idx + 1) % len(self.meta_paths))
             # return None
 
@@ -730,8 +649,8 @@ class ScenesDataset(Dataset):
         y = np.random.randint(0, max(h - int(self.patch_size[1]), 1))
         direction_x = 1
         direction_y = 1
-        step_y = np.random.randint(0, 6+1)
-        step_x = np.random.randint(0, 9+1)
+        step_y = np.random.randint(1, 20)
+        step_x = np.random.randint(5, 30)
         max_try = 500
         _try = 0
         while len(trajectories) < num_images:
@@ -799,54 +718,35 @@ class ScenesDataset(Dataset):
         parsing_file_path = os.path.dirname(meta_path)
         parser = Parser(parsing_file_path, factor=1, normalize=True)
 
-        image_0 = cv2.imread(parser.image_paths[0])
-        img_h, img_w = image_0.shape[:2]
-        if img_h < self.patch_size[1] or img_w < self.patch_size[0]:
-            raise ValueError(
-                f"Image size ({img_h}, {img_w}) is smaller than patch size {self.patch_size}. Please adjust the patch size or use larger images.")
         # 构造连续帧的 index + trajectory
         total_frames = len(parser.image_names)
-        possible_lengths = list(range(
-            self.min_frame, self.max_frame + 1, 4))  # [21, 25, ..., 81]
+        possible_lengths = [21, 41, 61, 81]
         sample_steps = [
             1,
             2,
-            3,
-            5,
-            6,
-            7,
+            3, 3, 3,
+            5, 5, 5,
+            9, 9, 9, 9, 9, 9
         ]
 
-        # print(f"Randoming sample step and length for scene {idx}...")
         if self.split == 'train':
             required_frames = 0x3f3f3f
-            max_trys = 100
-            _try_times = 0
-            chosen_length = np.random.choice(possible_lengths)
             while required_frames > total_frames:
-                _try_times += 1
-                if _try_times > max_trys:
-                    sample_step = 1
-                    indices = np.arange(
-                        0, (self.min_frame - 1) * sample_step + 1, sample_step)
-                    break
+
                 sample_step = np.random.choice(sample_steps)
+                chosen_length = np.random.choice(possible_lengths)
                 required_frames = (chosen_length - 1) * sample_step + 1
                 # print(
                 #     f"Required frames: {required_frames}, Total frames: {total_frames}, Sample step: {sample_step}")
-            start = np.random.randint(
-                0, total_frames - required_frames + 1)
-            indices = np.arange(
-                start, start + required_frames, sample_step)
+            start = np.random.randint(0, total_frames - required_frames + 1)
+            indices = np.arange(start, start + required_frames, sample_step)
         else:
             # 验证阶段默认固定长度和步长
-            sample_step = 4
-            indices = np.arange(0, (self.min_frame - 1)
-                                * sample_step + 1, sample_step)
+            sample_step = 1  # 或者设置为其他默认值
+            indices = np.arange(0, (41 - 1) * sample_step + 1, sample_step)
 
         print(
             f"Generating trajectory for scene {scene_idx} with indices: {indices}")
-
         trajectory = self.generate_fixed_step_trajectory(parser, indices)
         data_list = self.load_image_into_memory(parser, indices, trajectory)
 
@@ -899,13 +799,49 @@ class ScenesDataset(Dataset):
         print(f"Projection video saved to {output_path}")
 
 
+# def process_scene(i):
+#     try:
+#         dataset = ScenesDataset(split='train', ratio=1, patch_size=[832, 480])
+#         data = dataset[i]
+#         if data is None:
+#             return (i, False, dataset.meta_paths[i])
+#         return (i, True, dataset.meta_paths[i], data['images'].shape)
+#     except Exception as e:
+#         return (i, False, f"error@{i}", str(e))
+
+
+# def update(*args):
+#     pbar.update()
+
+
 if __name__ == "__main__":
-    split = 'test'
-    dataset = ScenesDataset(split=split, ratio=0.01, patch_size=[720, 480])
-
+    split = 'train'
+    dataset = ScenesDataset_Alter(split=split, ratio=1, patch_size=[832, 480])
     num_scene = len(dataset)
-    print(f"Total {num_scene} scenes in the dataset for {split} split.")
-    for idx, data in enumerate(dataset):
-        print(f"Processing scene {idx} with data: {data['images'].shape}")
+    data = dataset[0]
+    print(f"shape of input_images: {data['images'].shape}")
+    print(f"shape of extra_images: {data['extra_images'].shape}")
+    # valid_json = []
+    # invalid_json = []
 
-#  python -m examples.dataset.colmap_debug
+    # print(f"Using {mp.cpu_count()} processes for loading {num_scene} scenes.")
+
+    # with mp.Pool(processes=mp.cpu_count()) as pool:
+    #     result_iterator = pool.imap_unordered(process_scene, range(num_scene))
+    #     with tqdm(total=num_scene) as pbar:
+    #         results = []
+    #         for res in result_iterator:
+    #             results.append(res)
+    #             pbar.update(1)
+
+    # for r in results:
+    #     res = r.get()
+    #     if res[1]:
+    #         valid_json.append(res[2])
+    #     else:
+    #         invalid_json.append(res[2])
+
+    # with open('valid_scenes.json', 'w') as f:
+    #     f.write('\n'.join(valid_json))
+    # with open('invalid_scenes.json', 'w') as f:
+    #     f.write('\n'.join(invalid_json))

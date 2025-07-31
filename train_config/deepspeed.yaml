@@ -1,3 +1,6 @@
+# We didn't really use it in the end, but it is still here for reference.
+# This file is used to configure the training process with DeepSpeed.
+# It includes settings for distributed training, mixed precision, and other parameters.
 compute_environment: LOCAL_MACHINE
 debug: false
 deepspeed_config:
