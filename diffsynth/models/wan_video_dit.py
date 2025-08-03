@@ -6,8 +6,9 @@ import math
 from typing import Tuple, Optional
 from einops import rearrange
 from .utils import hash_state_dict_keys
-from .wan_video_camera_controller import SimpleAdapter
+# from .wan_video_camera_controller import SimpleAdapter
 from .camera_pose_encoder.pose_adaptor import CameraPoseEncoder
+from .camera_pose_encoder.light_weight_pose_encoder import SimpleAdapter
 
 try:
     import flash_attn_interface
@@ -544,15 +545,18 @@ class WanModel(torch.nn.Module):
                 16, dim, kernel_size=(2, 2), stride=(2, 2))
         self.has_image_pos_emb = has_image_pos_emb
         self.has_ref_conv = has_ref_conv
-        if add_control_adapter:
-            self.control_adapter = SimpleAdapter(
-                in_dim_control_adapter,
-                dim,
-                kernel_size=patch_size[1:],
-                stride=patch_size[1:],
-            )
-        else:
-            self.control_adapter = None
+
+        # TODO
+        self.control_adapter = None
+        # if add_control_adapter:
+        #     self.control_adapter = SimpleAdapter(
+        #         in_dim_control_adapter,
+        #         dim,
+        #         kernel_size=patch_size[1:],
+        #         stride=patch_size[1:],
+        #     )
+        # else:
+        #     self.control_adapter = None
 
     def patchify(
         self, x: torch.Tensor, control_camera_latents_input: torch.Tensor = None
@@ -958,22 +962,21 @@ class WanControlNet(WanModel):
         text_dim: int,
         freq_dim: int,
         eps: float,
-
         patch_size: Tuple[int, int, int],
         num_heads: int,
         num_layers: int,
         has_image_input: bool,
 
         control_block_index,
-        cover_base,
-        camera_lora_rank,
 
-
+        camera_lora_rank: int = 64,
+        cover_base: int = 5,
+        pre_camera_control: bool = False,
         has_image_pos_emb: bool = False,
         has_ref_conv: bool = False,
         add_control_adapter: bool = False,
         in_dim_control_adapter: int = 24,
-        camera_inject_blocks=[12, 13, 14, 15, 16],
+        camera_inject_blocks=[],
         ** kwargs,
     ):
         super().__init__(
@@ -1006,12 +1009,24 @@ class WanControlNet(WanModel):
         self.num_pose_blocks = len(camera_inject_blocks)
         self.camera_inject_blocks = camera_inject_blocks
         self.camera_lora_rank = camera_lora_rank
-        # Camera pose encoder
-        print(f"Init CameraPoseEncoder with kwargs: {kwargs['pose_encoder']}")
-        self.pose_encoder = CameraPoseEncoder(
-            **kwargs['pose_encoder'],
-            fuse_blocks=self.fuse_blocks,
-        )
+        self.pre_camera_control = pre_camera_control
+        if pre_camera_control:
+            self.pose_encoder = SimpleAdapter(
+                in_dim=6,
+                out_dim=dim,
+                kernel_size=2,
+                stride=1
+            )
+            self.pose_zero_linear = nn.Linear(dim, dim, bias=False)
+            self.pose_zero_linear.weight.data.zero_()
+        else:
+            # Camera pose encoder
+            print(
+                f"Init CameraPoseEncoder with kwargs: {kwargs['pose_encoder']}")
+            self.pose_encoder = CameraPoseEncoder(
+                **kwargs['pose_encoder'],
+                fuse_blocks=self.fuse_blocks,
+            )
 
         self.control_block_index = control_block_index
         num_control_block = len(self.control_block_index)
@@ -1059,9 +1074,10 @@ class WanControlNet(WanModel):
                 f"Module '{name}' ({child.__class__.__name__}) has {param_count} parameters.")
 
     def alter_camera_blocks(self):
+        if self.pre_camera_control:
+            return
         for idx, block in enumerate(self.blocks):
             if idx in self.camera_inject_blocks:
-                # print(f"Injecting camera control into block {idx}")
                 layer_state_state = block.state_dict()
                 self.blocks[idx] = CameraDiTBlock(
                     has_image_input=self.camera_has_image_input,
@@ -1071,11 +1087,8 @@ class WanControlNet(WanModel):
                     eps=self.eps,
                     camera_lora_rank=self.camera_lora_rank,
                 )
-                # print(f"Loading state dict for camera block {idx}")
                 state = self.blocks[idx].load_state_dict(
                     layer_state_state, strict=False)
-                # print(
-                #     f"Keys not found in camera block: {state.missing_keys} for camera block {idx}")
         print(
             f"After alternation, blocks params:{sum(p.numel() for p in self.blocks.parameters())}")
         print(
@@ -1086,14 +1099,9 @@ class WanControlNet(WanModel):
             return
         for idx, block in enumerate(self.blocks):
             if idx in self.control_block_index:
-                # print(
-                #     f"Copying weights from main branch to control block {idx}")
                 c_block_id = self.control_block_index.index(idx)
                 state = self.control_blocks[c_block_id].load_state_dict(
                     block.state_dict())
-                # print(
-                #     f"Keys not found in origin block: {state.missing_keys} for block {idx}"
-                # )
 
         print(f"Finished copying weights from main branch to control blocks.")
 
@@ -1114,13 +1122,9 @@ class WanControlNet(WanModel):
     def patchify(
         self, x: torch.Tensor, control_camera_latents_input: torch.Tensor = None
     ):
-        # print(f"x shape before patch embedding: {x.shape}")
-        # print(f"X dtype {x.dtype}")
-        # print(
-        #     f"patch_embedding dtype {next(self.patch_embedding.parameters()).dtype}")
+
         x = self.patch_embedding(x)
-        # print(f"x dtype ")
-        # print(f"x shape after patch embedding: {x.shape}")
+
         if (
             self.control_adapter is not None
             and control_camera_latents_input is not None

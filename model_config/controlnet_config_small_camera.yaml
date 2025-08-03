@@ -33,7 +33,7 @@ pose_encoder:
   temporal_position_encoding: False
   temporal_position_encoding_max_len: 16
   rescale_output_factor: 1.0
-  camera_compress_ratio: 2
+  camera_compress_ratio: 8
 
   # downscale_factor: 8
   # channels: 1536

@@ -135,14 +135,14 @@ class Resample(nn.Module):
                             feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(
                                 cache_x.device), cache_x
                         ],
-                                            dim=2)
+                            dim=2)
                     if cache_x.shape[2] < 2 and feat_cache[
                             idx] is not None and feat_cache[idx] == 'Rep':
                         cache_x = torch.cat([
                             torch.zeros_like(cache_x).to(cache_x.device),
                             cache_x
                         ],
-                                            dim=2)
+                            dim=2)
                     if feat_cache[idx] == 'Rep':
                         x = self.time_conv(x)
                     else:
@@ -223,7 +223,7 @@ class ResidualBlock(nn.Module):
                         feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(
                             cache_x.device), cache_x
                     ],
-                                        dim=2)
+                        dim=2)
                 x = layer(x, feat_cache[idx])
                 feat_cache[idx] = cache_x
                 feat_idx[0] += 1
@@ -263,7 +263,7 @@ class AttentionBlock(nn.Module):
             q,
             k,
             v,
-            #attn_mask=block_causal_mask(q, block_size=h * w)
+            # attn_mask=block_causal_mask(q, block_size=h * w)
         )
         x = x.squeeze(1).permute(0, 2, 1).reshape(b * t, c, h, w)
 
@@ -335,28 +335,28 @@ class Encoder3d(nn.Module):
                     feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(
                         cache_x.device), cache_x
                 ],
-                                    dim=2)
+                    dim=2)
             x = self.conv1(x, feat_cache[idx])
             feat_cache[idx] = cache_x
             feat_idx[0] += 1
         else:
             x = self.conv1(x)
 
-        ## downsamples
+        # downsamples
         for layer in self.downsamples:
             if feat_cache is not None:
                 x = layer(x, feat_cache, feat_idx)
             else:
                 x = layer(x)
 
-        ## middle
+        # middle
         for layer in self.middle:
             if check_is_instance(layer, ResidualBlock) and feat_cache is not None:
                 x = layer(x, feat_cache, feat_idx)
             else:
                 x = layer(x)
 
-        ## head
+        # head
         for layer in self.head:
             if check_is_instance(layer, CausalConv3d) and feat_cache is not None:
                 idx = feat_idx[0]
@@ -367,7 +367,7 @@ class Encoder3d(nn.Module):
                         feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(
                             cache_x.device), cache_x
                     ],
-                                        dim=2)
+                        dim=2)
                 x = layer(x, feat_cache[idx])
                 feat_cache[idx] = cache_x
                 feat_idx[0] += 1
@@ -430,7 +430,7 @@ class Decoder3d(nn.Module):
                                   CausalConv3d(out_dim, 3, 3, padding=1))
 
     def forward(self, x, feat_cache=None, feat_idx=[0]):
-        ## conv1
+        # conv1
         if feat_cache is not None:
             idx = feat_idx[0]
             cache_x = x[:, :, -CACHE_T:, :, :].clone()
@@ -440,28 +440,28 @@ class Decoder3d(nn.Module):
                     feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(
                         cache_x.device), cache_x
                 ],
-                                    dim=2)
+                    dim=2)
             x = self.conv1(x, feat_cache[idx])
             feat_cache[idx] = cache_x
             feat_idx[0] += 1
         else:
             x = self.conv1(x)
 
-        ## middle
+        # middle
         for layer in self.middle:
             if check_is_instance(layer, ResidualBlock) and feat_cache is not None:
                 x = layer(x, feat_cache, feat_idx)
             else:
                 x = layer(x)
 
-        ## upsamples
+        # upsamples
         for layer in self.upsamples:
             if feat_cache is not None:
                 x = layer(x, feat_cache, feat_idx)
             else:
                 x = layer(x)
 
-        ## head
+        # head
         for layer in self.head:
             if check_is_instance(layer, CausalConv3d) and feat_cache is not None:
                 idx = feat_idx[0]
@@ -472,7 +472,7 @@ class Decoder3d(nn.Module):
                         feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(
                             cache_x.device), cache_x
                     ],
-                                        dim=2)
+                        dim=2)
                 x = layer(x, feat_cache[idx])
                 feat_cache[idx] = cache_x
                 feat_idx[0] += 1
@@ -524,7 +524,7 @@ class VideoVAE_(nn.Module):
 
     def encode(self, x, scale):
         self.clear_cache()
-        ## cache
+        # cache
         t = x.shape[2]
         iter_ = 1 + (t - 1) // 4
 
@@ -571,7 +571,7 @@ class VideoVAE_(nn.Module):
                 out_ = self.decoder(x[:, :, i:i + 1, :, :],
                                     feat_cache=self._feat_map,
                                     feat_idx=self._conv_idx)
-                out = torch.cat([out, out_], 2) # may add tensor offload
+                out = torch.cat([out, out_], 2)  # may add tensor offload
         return out
 
     def reparameterize(self, mu, log_var):
@@ -617,15 +617,14 @@ class WanVideoVAE(nn.Module):
         self.model = VideoVAE_(z_dim=z_dim).eval().requires_grad_(False)
         self.upsampling_factor = 8
 
-
     def build_1d_mask(self, length, left_bound, right_bound, border_width):
         x = torch.ones((length,))
         if not left_bound:
             x[:border_width] = (torch.arange(border_width) + 1) / border_width
         if not right_bound:
-            x[-border_width:] = torch.flip((torch.arange(border_width) + 1) / border_width, dims=(0,))
+            x[-border_width:] = torch.flip(
+                (torch.arange(border_width) + 1) / border_width, dims=(0,))
         return x
-
 
     def build_mask(self, data, is_bound, border_width):
         _, _, _, H, W = data.shape
@@ -639,7 +638,6 @@ class WanVideoVAE(nn.Module):
         mask = rearrange(mask, "H W -> 1 1 1 H W")
         return mask
 
-
     def tiled_decode(self, hidden_states, device, tile_size, tile_stride):
         _, _, T, H, W = hidden_states.shape
         size_h, size_w = tile_size
@@ -648,9 +646,11 @@ class WanVideoVAE(nn.Module):
         # Split tasks
         tasks = []
         for h in range(0, H, stride_h):
-            if (h-stride_h >= 0 and h-stride_h+size_h >= H): continue
+            if (h-stride_h >= 0 and h-stride_h+size_h >= H):
+                continue
             for w in range(0, W, stride_w):
-                if (w-stride_w >= 0 and w-stride_w+size_w >= W): continue
+                if (w-stride_w >= 0 and w-stride_w+size_w >= W):
+                    continue
                 h_, w_ = h + size_h, w + size_w
                 tasks.append((h, h_, w, w_))
 
@@ -658,21 +658,28 @@ class WanVideoVAE(nn.Module):
         computation_device = device
 
         out_T = T * 4 - 3
-        weight = torch.zeros((1, 1, out_T, H * self.upsampling_factor, W * self.upsampling_factor), dtype=hidden_states.dtype, device=data_device)
-        values = torch.zeros((1, 3, out_T, H * self.upsampling_factor, W * self.upsampling_factor), dtype=hidden_states.dtype, device=data_device)
-
-        for h, h_, w, w_ in tqdm(tasks, desc="VAE decoding"):
-            hidden_states_batch = hidden_states[:, :, :, h:h_, w:w_].to(computation_device)
-            hidden_states_batch = self.model.decode(hidden_states_batch, self.scale).to(data_device)
+        weight = torch.zeros((1, 1, out_T, H * self.upsampling_factor, W *
+                             self.upsampling_factor), dtype=hidden_states.dtype, device=data_device)
+        values = torch.zeros((1, 3, out_T, H * self.upsampling_factor, W *
+                             self.upsampling_factor), dtype=hidden_states.dtype, device=data_device)
+        disable_flag = True
+        for h, h_, w, w_ in tqdm(tasks, desc="VAE decoding", disable=disable_flag):
+            hidden_states_batch = hidden_states[:, :, :, h:h_, w:w_].to(
+                computation_device)
+            hidden_states_batch = self.model.decode(
+                hidden_states_batch, self.scale).to(data_device)
 
             mask = self.build_mask(
                 hidden_states_batch,
-                is_bound=(h==0, h_>=H, w==0, w_>=W),
-                border_width=((size_h - stride_h) * self.upsampling_factor, (size_w - stride_w) * self.upsampling_factor)
+                is_bound=(h == 0, h_ >= H, w == 0, w_ >= W),
+                border_width=((size_h - stride_h) * self.upsampling_factor,
+                              (size_w - stride_w) * self.upsampling_factor)
             ).to(dtype=hidden_states.dtype, device=data_device)
 
             target_h = h * self.upsampling_factor
             target_w = w * self.upsampling_factor
+            import pdb
+            # pdb.set_trace()
             values[
                 :,
                 :,
@@ -691,7 +698,6 @@ class WanVideoVAE(nn.Module):
         values = values.clamp_(-1, 1)
         return values
 
-
     def tiled_encode(self, video, device, tile_size, tile_stride):
         _, _, T, H, W = video.shape
         size_h, size_w = tile_size
@@ -700,9 +706,11 @@ class WanVideoVAE(nn.Module):
         # Split tasks
         tasks = []
         for h in range(0, H, stride_h):
-            if (h-stride_h >= 0 and h-stride_h+size_h >= H): continue
+            if (h-stride_h >= 0 and h-stride_h+size_h >= H):
+                continue
             for w in range(0, W, stride_w):
-                if (w-stride_w >= 0 and w-stride_w+size_w >= W): continue
+                if (w-stride_w >= 0 and w-stride_w+size_w >= W):
+                    continue
                 h_, w_ = h + size_h, w + size_w
                 tasks.append((h, h_, w, w_))
 
@@ -710,17 +718,22 @@ class WanVideoVAE(nn.Module):
         computation_device = device
 
         out_T = (T + 3) // 4
-        weight = torch.zeros((1, 1, out_T, H // self.upsampling_factor, W // self.upsampling_factor), dtype=video.dtype, device=data_device)
-        values = torch.zeros((1, 16, out_T, H // self.upsampling_factor, W // self.upsampling_factor), dtype=video.dtype, device=data_device)
-
-        for h, h_, w, w_ in tqdm(tasks, desc="VAE encoding"):
-            hidden_states_batch = video[:, :, :, h:h_, w:w_].to(computation_device)
-            hidden_states_batch = self.model.encode(hidden_states_batch, self.scale).to(data_device)
+        weight = torch.zeros((1, 1, out_T, H // self.upsampling_factor, W //
+                             self.upsampling_factor), dtype=video.dtype, device=data_device)
+        values = torch.zeros((1, 16, out_T, H // self.upsampling_factor, W //
+                             self.upsampling_factor), dtype=video.dtype, device=data_device)
+        disable_flag = True
+        for h, h_, w, w_ in tqdm(tasks, desc="VAE encoding", disable=disable_flag):
+            hidden_states_batch = video[:, :, :,
+                                        h:h_, w:w_].to(computation_device)
+            hidden_states_batch = self.model.encode(
+                hidden_states_batch, self.scale).to(data_device)
 
             mask = self.build_mask(
                 hidden_states_batch,
-                is_bound=(h==0, h_>=H, w==0, w_>=W),
-                border_width=((size_h - stride_h) // self.upsampling_factor, (size_w - stride_w) // self.upsampling_factor)
+                is_bound=(h == 0, h_ >= H, w == 0, w_ >= W),
+                border_width=((size_h - stride_h) // self.upsampling_factor,
+                              (size_w - stride_w) // self.upsampling_factor)
             ).to(dtype=video.dtype, device=data_device)
 
             target_h = h // self.upsampling_factor
@@ -742,18 +755,15 @@ class WanVideoVAE(nn.Module):
         values = values / weight
         return values
 
-
     def single_encode(self, video, device):
         video = video.to(device)
         x = self.model.encode(video, self.scale)
         return x
 
-
     def single_decode(self, hidden_state, device):
         hidden_state = hidden_state.to(device)
         video = self.model.decode(hidden_state, self.scale)
         return video.clamp_(-1, 1)
-
 
     def encode(self, videos, device, tiled=False, tile_size=(34, 34), tile_stride=(18, 16)):
 
@@ -764,7 +774,8 @@ class WanVideoVAE(nn.Module):
             if tiled:
                 tile_size = (tile_size[0] * 8, tile_size[1] * 8)
                 tile_stride = (tile_stride[0] * 8, tile_stride[1] * 8)
-                hidden_state = self.tiled_encode(video, device, tile_size, tile_stride)
+                hidden_state = self.tiled_encode(
+                    video, device, tile_size, tile_stride)
             else:
                 hidden_state = self.single_encode(video, device)
             hidden_state = hidden_state.squeeze(0)
@@ -772,14 +783,25 @@ class WanVideoVAE(nn.Module):
         hidden_states = torch.stack(hidden_states)
         return hidden_states
 
-
     def decode(self, hidden_states, device, tiled=False, tile_size=(34, 34), tile_stride=(18, 16)):
-        if tiled:
-            video = self.tiled_decode(hidden_states, device, tile_size, tile_stride)
-        else:
-            video = self.single_decode(hidden_states, device)
-        return video
+        video = []
+        for _hidden_states in hidden_states:
+            _hidden_states = _hidden_states.unsqueeze(0)
+            if tiled:
+                video.append(
+                    self.tiled_decode(_hidden_states, device, tile_size,
+                                      tile_stride))
+            else:
+                video.append(self.single_decode(_hidden_states, device))
 
+        video = torch.cat(video, dim=0)
+        # TODO
+        # if tiled:
+        #     video = self.tiled_decode(
+        #         hidden_states, device, tile_size, tile_stride)
+        # else:
+        #     video = self.single_decode(hidden_states, device)
+        return video
 
     @staticmethod
     def state_dict_converter():

@@ -1,6 +1,6 @@
 import multiprocessing as mp
 from tqdm import tqdm
-from .recon_debug import ReconfusionParser
+
 import pdb
 import os
 import json
@@ -397,25 +397,17 @@ class ScenesDataset(Dataset):
 
     def __init__(
         self,
-        parser_type='colmap',
         no_extra_frame=False,
-        max_sample_step=4,
         max_frame=81,
         min_frame=21,
         relative_pose=True,
         split='train',
         ratio=0.99,
         patch_size: Optional[List[int]] = [720, 480],  # W H
-        resize_size: Optional[List[int]] = [288, 192],
-        debug: bool = False,
     ):
-        self.max_sample_step = max_sample_step
-        self.parser_type = parser_type
-        self.resize_size = resize_size
         self.no_extra_frame = no_extra_frame
         self.max_frame = max_frame
         self.min_frame = min_frame
-        self.debug = debug
         print(f"Frame range: {self.min_frame} to {self.max_frame}")
         if self.no_extra_frame:
             print(
@@ -427,13 +419,11 @@ class ScenesDataset(Dataset):
         with open(meta_json, 'r') as f:
             meta_paths = f.readlines()
         self.meta_paths = [p.strip() for p in meta_paths]
-        print(f"Total {len(self.meta_paths)} scenes found in {meta_json}")
-        if debug:
-            # shuffle the meta_paths
-            random.shuffle(self.meta_paths)
         assert ratio <= 1.0, f"Ratio {ratio} should be less than or equal to 1.0"
 
         total_scenes = len(self.meta_paths)
+        # shuffle
+        # random.shuffle(self.meta_paths)
         if self.split == 'train':
             num_scenes = int(len(self.meta_paths) * ratio)
             if num_scenes == total_scenes:
@@ -482,20 +472,25 @@ class ScenesDataset(Dataset):
             # print(f"Loading scene {idx} from {meta_path}")
             parsing_file_path = os.path.dirname(meta_path)
             # print(f"Parsing file path: {parsing_file_path}")
-            if self.parser_type == 'colmap':
-                parser = Parser(parsing_file_path, factor=1, normalize=True)
-            elif self.parser_type == 'recon':
-                parser = ReconfusionParser(
-                    parsing_file_path, factor=1, normalize=True)
+            parser = Parser(parsing_file_path, factor=1, normalize=True)
 
             total_frames = len(parser.image_names)
             if total_frames < 21:
                 raise ValueError(
                     f"Total frames {total_frames} is less than 21, cannot sample trajectory.")
 
+            # possible_lengths = list(range(21, 81+1, 4))
+            # possible_lengths = [13:65]
             possible_lengths = list(range(
                 self.min_frame, self.max_frame + 1, 4))  # [21, 25, ..., 81]
-            sample_steps = list(range(1, self.max_sample_step + 1))
+            sample_steps = [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6
+            ]
 
             # print(f"Randoming sample step and length for scene {idx}...")
             if self.split == 'train':
@@ -520,16 +515,19 @@ class ScenesDataset(Dataset):
                     start, start + required_frames, sample_step)
             else:
                 # 验证阶段默认固定长度和步长
-                sample_step = max(self.max_sample_step//2, 1)
+                sample_step = 4
                 indices = np.arange(0, (self.min_frame - 1)
                                     * sample_step + 1, sample_step)
 
+            # print(f"Generated trajectory...")
             # TODO
             trajectory = self.generate_fixed_step_trajectory(parser, indices)
-
+            # print(f"loading images into memory for scene {idx}...")
             data_list = self.load_image_into_memory(
                 parser, indices, trajectory)
-
+            # print(
+            #     f"K,w2c shape {data_list[0]['cam_info'].K.shape, data_list[0]['cam_info'].w2c.shape}")
+            # print(f"Loaded {len(data_list)} frames for scene {idx}.")
             cam_params = [Pose(K=data["cam_info"].K, w2c=data["cam_info"].w2c,
                                image_name=data["cam_info"].image_name,
                                image_path=data["cam_info"].image_path,
@@ -552,9 +550,8 @@ class ScenesDataset(Dataset):
             # [1, n_frame, 4, 4]
             # print(f"Generating plucker embedding for scene {idx}...")
             c2w = torch.as_tensor(c2w_poses)[None]
-            final_h, final_w = data_list[0]["image"].shape[0:2]
             plucker_embedding = ray_condition(intrinsics, c2w,
-                                              final_h, final_w,  # H, W
+                                              self.patch_size[1], self.patch_size[0],
                                               device='cpu',)[0].permute(0, 3, 1, 2).contiguous()
 
             data_dict = {
@@ -613,7 +610,9 @@ class ScenesDataset(Dataset):
                 extra_images = data_dict['images'][valid_mask]
                 extra_image_frame_index = torch.nonzero(
                     valid_mask, as_tuple=False).squeeze()  # Get indices of valid frames
-
+                # print(
+                #     f"Extra images shape: {extra_images.shape}, extra_image_frame_index shape: {extra_image_frame_index.shape}")
+                # print(f"extra index ndim: {extra_image_frame_index.ndim}")
                 if extra_image_frame_index.ndim == 0:
                     data_dict['extra_images'] = None
                     data_dict['extra_image_frame_index'] = None
@@ -626,49 +625,18 @@ class ScenesDataset(Dataset):
                     # Add the 'extra_images' and 'extra_image_frame_index' to the data_dict
                     data_dict['extra_images'] = extra_images
                     data_dict['extra_image_frame_index'] = extra_image_frame_index
-            # print(
-            #     f"return data with video shape: {data_dict['images'].shape}")
+        # print(
+        #     f"return data with video shape: {data_dict['images'].shape}")
 
             return data_dict
         except Exception as e:
             # print(
             #     f"Error loading scene {idx} from {meta_path}: {e}, loading next scene")
             return self.__getitem__((idx + 1) % len(self.meta_paths))
-        # return None
+            # return None
 
     def __len__(self):
         return len(self.meta_paths)
-
-    def resize_and_center_crop(self, image, K):
-        h, w = image.shape[:2]
-        target_w, target_h = self.resize_size
-        # 计算缩放比例
-        scale = max(target_w / w, target_h / h)
-
-        # 缩放
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        image_resized = cv2.resize(
-            image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-
-        # 调整相机内参
-        K = K.copy()
-        K[0, 0] *= scale  # fx
-        K[1, 1] *= scale  # fy
-        K[0, 2] *= scale  # cx
-        K[1, 2] *= scale  # cy
-
-        # 中心裁剪
-        start_x = (new_w - target_w) // 2
-        start_y = (new_h - target_h) // 2
-        image_cropped = image_resized[start_y:start_y +
-                                      target_h, start_x:start_x+target_w]
-
-        # 更新 principal point
-        K[0, 2] -= start_x
-        K[1, 2] -= start_y
-
-        return image_cropped, K
 
     def load_image_into_memory(self, parser, indices, trajectories):
         # print(f"Loading {len(indices)} images into memory...")
@@ -683,9 +651,9 @@ class ScenesDataset(Dataset):
             height, width = image.shape[:2]
             camera_id = parser.camera_ids[index]
             K = parser.Ks_dict[camera_id].copy()
-
-            params = parser.params_dict.get(camera_id, np.array([]))
+            params = parser.params_dict[camera_id]
             c2w = parser.camtoworlds[index]
+            mask = parser.mask_dict[camera_id]
             w2c = np.linalg.inv(c2w)
 
             if len(params) > 0:
@@ -705,9 +673,6 @@ class ScenesDataset(Dataset):
                 ]
                 K[0, 2] -= x_start
                 K[1, 2] -= y_start
-            image, K = self.resize_and_center_crop(
-                image, K
-            )
 
             h, w = image.shape[:2]
             cam_info = CameraInfo(
@@ -728,7 +693,8 @@ class ScenesDataset(Dataset):
                 "image": torch.from_numpy(image) / 255.0,
                 "image_name": image_name,
             }
-
+            if mask is not None:
+                data["mask"] = torch.from_numpy(mask)
             data_list.append(data)
 
         return data_list
@@ -874,7 +840,7 @@ class ScenesDataset(Dataset):
                 start, start + required_frames, sample_step)
         else:
             # 验证阶段默认固定长度和步长
-            sample_step = 1
+            sample_step = 4
             indices = np.arange(0, (self.min_frame - 1)
                                 * sample_step + 1, sample_step)
 
@@ -884,8 +850,8 @@ class ScenesDataset(Dataset):
         trajectory = self.generate_fixed_step_trajectory(parser, indices)
         data_list = self.load_image_into_memory(parser, indices, trajectory)
 
-        h, w = data_list[0]["image"].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        h, w = self.patch_size[1], self.patch_size[0]
+        fourcc = cv2.VideoWriter_fourcc(*"XVID")
         fps = 10
         output_path = os.path.join(
             save_root, os.path.basename(os.path.dirname(meta_path))
@@ -894,7 +860,7 @@ class ScenesDataset(Dataset):
         save_dir = os.path.dirname(output_path)
         os.makedirs(save_dir, exist_ok=True)
 
-        video_writer = cv2.VideoWriter(output_path+'.avi', fourcc, fps, (w, h))
+        video_writer = cv2.VideoWriter(output_path+'.mp4', fourcc, fps, (w, h))
 
         for data in tqdm(data_list, desc="Visualizing projection video"):
             img = (data["image"].numpy() * 255).astype(np.uint8)
@@ -935,19 +901,11 @@ class ScenesDataset(Dataset):
 
 if __name__ == "__main__":
     split = 'test'
-    seed = 42
-    random.seed(seed)
-    parser_type = 'colmap'
-    dataset = ScenesDataset(split=split, ratio=0.1, patch_size=[
-                            720, 480], parser_type=parser_type, debug=True, min_frame=81)
+    dataset = ScenesDataset(split=split, ratio=0.01, patch_size=[720, 480])
 
     num_scene = len(dataset)
-    for idx in range(len(dataset)):
-        data = dataset.__getitem__(idx)
-        for k, v in data.items():
-            if isinstance(v, torch.Tensor):
-                print(f"{k}: {v.shape}")
-            else:
-                print(f"{k}: {v}")
+    print(f"Total {num_scene} scenes in the dataset for {split} split.")
+    for idx, data in enumerate(dataset):
+        print(f"Processing scene {idx} with data: {data['images'].shape}")
 
 #  python -m examples.dataset.colmap_debug

@@ -114,8 +114,6 @@ class WanTrainingModule(DiffusionTrainingModule):
         if config_path is not None:
             self.model_config = OmegaConf.load(config_path)
 
-        # print(f"dit data type : {self.pipe.dit.parameters().__next__().dtype}")
-
         # Reset training scheduler
         self.pipe.scheduler.set_timesteps(1000, training=True)
 
@@ -550,12 +548,37 @@ if __name__ == "__main__":
     # dataset = VideoDataset(args=args)
     # export DEEPSPEED_LOG_LEVEL=debug
     # export DEEPSPEED_ZERO_LOG_LEVEL=debug
+
+    # Save model config and args
+    model_config_save_path = os.path.join(
+        args.output_path, "model_config.yaml")
+    os.makedirs(args.output_path, exist_ok=True)
+    if accelerator.is_main_process and not os.path.exists(model_config_save_path):
+        accelerator.print(
+            f"Saving model configuration to {model_config_save_path}")
+        from omegaconf import OmegaConf
+        model_config = OmegaConf.load(args.model_config_path)
+
+        OmegaConf.save(config=model_config,
+                       f=model_config_save_path)
+    args_save_path = os.path.join(
+        args.output_path, "args.yaml")
+    import yaml
+    if accelerator.is_main_process and not os.path.exists(args_save_path):
+        accelerator.print(
+            f"Saving args to {args_save_path}")
+        with open(args_save_path, "w") as f:
+            yaml.dump(args.__dict__, f)
+    accelerator.wait_for_everyone()
+
+    # Load model
     model = WanTrainingModule(
         model_id_with_origin_paths=args.model_id_with_origin_paths,
         trainable_models=args.trainable_models,
         use_gradient_checkpointing=args.use_gradient_checkpointing,
         config_path=args.model_config_path,
     )
+
     print(f"Model data type : {model.pipe.dit.parameters().__next__().dtype}")
     if args.train_only_camera:
         print("Training only the camera model.")
@@ -610,12 +633,17 @@ if __name__ == "__main__":
 
     optimizer = torch.optim.AdamW(
         model.trainable_modules(), lr=args.learning_rate)
-    scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
+    if args.warmup_steps > 0:
+        scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.5, total_iters=args.warmup_steps)
+    else:
+        scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     start_epoch, global_step = 0, 0
     start_epoch, global_step = model_logger.load_training_state(
         accelerator=accelerator,
         dir=args.training_state_dir,
     )
+
     accelerator.wait_for_everyone()
 
     launch_training_task(

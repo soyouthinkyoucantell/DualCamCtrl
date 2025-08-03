@@ -35,7 +35,8 @@ def wan_parser():
                         help="Whether to only use the first frame of the video for training.")
     parser.add_argument("--train_only_camera", default=False, action="store_true",
                         help="Whether to train only the camera model.")
-
+    parser.add_argument('--warmup_steps', type=int, default=0,
+                        help="Number of warmup steps for the learning rate scheduler.") 
     # Dataset
     parser.add_argument("--train_max_frame", type=int, default=49,
                         help="Maximum number of frames to use for training. If set to 0, all frames will be used.")
@@ -43,5 +44,5 @@ def wan_parser():
                         help="Minimum number of frames to use for training. If set to 0, all frames will be used.")
     parser.add_argument("--test_min_frame", type=int, default=5,
                         help="Minimum number of frames to use for testing. If set to 0, all frames will be used.")
-
+    
     return parser
