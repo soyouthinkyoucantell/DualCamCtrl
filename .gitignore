@@ -9,3 +9,6 @@ diffsynth.egg-info
 data_prepare/
 apps/
 dependency
+!diffsynth/
+!diffsynth/models/
+!diffsynth/models/camera_pose_encoder/
