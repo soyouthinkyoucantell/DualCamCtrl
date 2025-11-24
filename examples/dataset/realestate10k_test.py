@@ -14,13 +14,6 @@ from torch.utils.data.dataset import Dataset
 from packaging import version as pver
 from .colmap_debug import ray_condition, custom_meshgrid
 
-# data_root = '/hpc2hdd/JH_DATA/share/yingcongchen/PrivateShareGroup/yingcongchen_datasets/re10k/'
-# train_dir = 'train'
-# test_dir = 'test'
-# train_root = os.path.join(data_root, train_dir)
-# test_root = os.path.join(data_root, test_dir)
-# re10k_train_meta_json = '/data/user/hongfeizhang/dataset/re10k/re10k_train_meta.json'
-# re10k_test_meta_json = '/data/user/hongfeizhang/dataset/re10k/re10k_test_meta.json'
 
 
 class RandomHorizontalFlipWithPose(nn.Module):
