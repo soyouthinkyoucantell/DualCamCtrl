@@ -1,0 +1,55 @@
+dit:
+  dim: 1536
+  in_dim: 32
+  ffn_dim: 8960
+  out_dim: 16
+  text_dim: 4096
+  freq_dim: 256
+  eps: 1.0e-06
+  patch_size:
+    - 1
+    - 2
+    - 2
+  num_heads: 12
+  num_layers: 30
+  has_image_input: true
+  text_len: 512
+  in_dim_control_adapter: 24
+  rgb_inject_blocks: [0, 1, 2, 3, 4]
+  depth_inject_blocks: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+  use_gate_3d_linear: true
+  update: true
+  control_block_index:
+    [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+    ]
+  add_control_adapter: true

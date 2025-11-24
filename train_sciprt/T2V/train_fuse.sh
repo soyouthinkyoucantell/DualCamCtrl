@@ -1,0 +1,1 @@
+accelerate launch --config_file train_config/accelerate_config/accelerate_acc4.yaml -m examples.wanvideo.model_training.train_with_accelerate --config train_config/normal_config/t2v_train_fuse_all.yaml

@@ -1,4 +1,3 @@
-LICENSE
 README.md
 setup.py
 diffsynth/__init__.py
@@ -80,6 +79,8 @@ diffsynth/models/flux_infiniteyou.py
 diffsynth/models/flux_ipadapter.py
 diffsynth/models/flux_text_encoder.py
 diffsynth/models/flux_vae.py
+diffsynth/models/gate_3d_linear.py
+diffsynth/models/gate_3d_linear_stack.py
 diffsynth/models/hunyuan_dit.py
 diffsynth/models/hunyuan_dit_text_encoder.py
 diffsynth/models/hunyuan_video_dit.py
@@ -120,7 +121,9 @@ diffsynth/models/svd_vae_encoder.py
 diffsynth/models/tiler.py
 diffsynth/models/utils.py
 diffsynth/models/wan_video_camera_controller.py
+diffsynth/models/wan_video_camera_controller_ours.py
 diffsynth/models/wan_video_dit.py
+diffsynth/models/wan_video_dit_ours.py
 diffsynth/models/wan_video_image_encoder.py
 diffsynth/models/wan_video_motion_controller.py
 diffsynth/models/wan_video_text_encoder.py
@@ -145,6 +148,8 @@ diffsynth/pipelines/step_video.py
 diffsynth/pipelines/svd_video.py
 diffsynth/pipelines/wan_video.py
 diffsynth/pipelines/wan_video_new.py
+diffsynth/pipelines/wan_video_new_altered.py
+diffsynth/pipelines/wan_video_new_camera.py
 diffsynth/processors/FastBlend.py
 diffsynth/processors/PILEditor.py
 diffsynth/processors/RIFE.py
@@ -228,3 +233,20 @@ diffsynth/trainers/utils.py
 diffsynth/vram_management/__init__.py
 diffsynth/vram_management/gradient_checkpointing.py
 diffsynth/vram_management/layers.py
+examples/__init__.py
+examples/dataset/CameraPose.py
+examples/dataset/__init__.py
+examples/dataset/camera_utils.py
+examples/dataset/cameras.py
+examples/dataset/colmap_debug.py
+examples/dataset/general_utils.py
+examples/dataset/graphics_utils.py
+examples/dataset/normalize.py
+examples/dataset/realestate10k.py
+examples/dataset/realestate10k_demo.py
+examples/dataset/realestate10k_test.py
+examples/dataset/recon_debug.py
+examples/wanvideo/__init__.py
+examples/wanvideo/model_training/__init__.py
+examples/wanvideo/model_training/args.py
+examples/wanvideo/model_training/train_with_accelerate.py

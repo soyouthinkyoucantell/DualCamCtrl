@@ -56,7 +56,7 @@ from .utils import load_state_dict, init_weights_on_device, hash_state_dict_keys
 def load_model_from_single_file(state_dict, model_names, model_classes, model_resource, torch_dtype, device):
     loaded_model_names, loaded_models = [], []
     for model_name, model_class in zip(model_names, model_classes):
-        print(f"    model_name: {model_name} model_class: {model_class.__name__}")
+        # print(f"    model_name: {model_name} model_class: {model_class.__name__}")
         state_dict_converter = model_class.state_dict_converter()
         if model_resource == "civitai":
             state_dict_results = state_dict_converter.from_civitai(state_dict)
@@ -64,7 +64,7 @@ def load_model_from_single_file(state_dict, model_names, model_classes, model_re
             state_dict_results = state_dict_converter.from_diffusers(state_dict)
         if isinstance(state_dict_results, tuple):
             model_state_dict, extra_kwargs = state_dict_results
-            print(f"        This model is initialized with extra kwargs: {extra_kwargs}")
+            # print(f"        This model is initialized with extra kwargs: {extra_kwargs}")
         else:
             model_state_dict, extra_kwargs = state_dict_results, {}
         torch_dtype = torch.float32 if extra_kwargs.get("upcast_to_float32", False) else torch_dtype
@@ -98,7 +98,7 @@ def load_model_from_huggingface_folder(file_path, model_names, model_classes, to
 
 
 def load_single_patch_model_from_single_file(state_dict, model_name, model_class, base_model, extra_kwargs, torch_dtype, device):
-    print(f"    model_name: {model_name} model_class: {model_class.__name__} extra_kwargs: {extra_kwargs}")
+    # print(f"    model_name: {model_name} model_class: {model_class.__name__} extra_kwargs: {extra_kwargs}")
     base_state_dict = base_model.state_dict()
     base_model.to("cpu")
     del base_model
@@ -338,7 +338,7 @@ class ModelManager:
 
 
     def load_model_from_single_file(self, file_path="", state_dict={}, model_names=[], model_classes=[], model_resource=None):
-        print(f"Loading models from file: {file_path}")
+        # print(f"Loading models from file: {file_path}")
         if len(state_dict) == 0:
             state_dict = load_state_dict(file_path)
         model_names, models = load_model_from_single_file(state_dict, model_names, model_classes, model_resource, self.torch_dtype, self.device)
@@ -350,7 +350,7 @@ class ModelManager:
 
 
     def load_model_from_huggingface_folder(self, file_path="", model_names=[], model_classes=[]):
-        print(f"Loading models from folder: {file_path}")
+        # print(f"Loading models from folder: {file_path}")
         model_names, models = load_model_from_huggingface_folder(file_path, model_names, model_classes, self.torch_dtype, self.device)
         for model_name, model in zip(model_names, models):
             self.model.append(model)
@@ -393,7 +393,7 @@ class ModelManager:
 
 
     def load_model(self, file_path, model_names=None, device=None, torch_dtype=None):
-        print(f"Loading models from: {file_path}")
+        # print(f"Loading models from: {file_path}")
         if device is None: device = self.device
         if torch_dtype is None: torch_dtype = self.torch_dtype
         if isinstance(file_path, list):
@@ -439,7 +439,8 @@ class ModelManager:
             print(f"No {model_name} models available.")
             return None
         if len(fetched_models) == 1:
-            print(f"Using {model_name} from {fetched_model_paths[0]}.")
+            pass 
+            # print(f"Using {model_name} from {fetched_model_paths[0]}.")
         else:
             print(f"More than one {model_name} models are loaded in model manager: {fetched_model_paths}. Using {model_name} from {fetched_model_paths[0]}.")
         if require_model_path:

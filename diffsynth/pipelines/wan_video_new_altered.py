@@ -140,7 +140,7 @@ class BasePipeline(torch.nn.Module):
         if isinstance(image, torch.Tensor):
             # C H W
             assert (len(image.shape) == 3 and image.shape[0] == 3) or (len(
-                image.shape) == 4 and image.shape[1] == 3), "Image tensor must be in C H W or B C H W format."
+                image.shape) == 4 and image.shape[1] == 3), "Image tensor must be in 3 H W or B 3 H W format."
             image = image.to(
                 dtype=torch_dtype or self.torch_dtype, device=device or self.device
             )
@@ -435,6 +435,9 @@ class WanVideoPipeline(BasePipeline):
 
         loss = torch.nn.functional.mse_loss(
             noise_pred.float(), training_target.float())
+        loss = torch.tensor(0.0, requires_grad=True, device=loss.device) if loss.isnan(
+        ).any() or loss.isinf().any() else loss
+        # print(f"loss shape: {loss.shape}, loss value: {loss.item()}")
         loss = loss * self.scheduler.training_weight(timestep)
         return loss
 
@@ -619,7 +622,7 @@ class WanVideoPipeline(BasePipeline):
             model_id="Wan-AI/Wan2.1-T2V-1.3B", origin_file_pattern="google/*"
         ),
         local_model_path: str = "./models",
-        skip_download: bool = False,
+        skip_download: bool = True,
         redirect_common_files: bool = True,
         use_usp=False,
     ):
@@ -872,7 +875,7 @@ class WanVideoPipeline(BasePipeline):
             )
 
         # Denoise
-        self.load_models_to_device(self.in_iteration_models)
+        # self.load_models_to_device(self.in_iteration_models)
         models = {name: getattr(self, name)
                   for name in self.in_iteration_models}
         # print(
@@ -916,8 +919,8 @@ class WanVideoPipeline(BasePipeline):
             inputs_shared["latents"] = inputs_shared["latents"][:, :, 1:]
 
         # Decode
-        self.load_models_to_device(["vae"])
-        print(f"latents shape: {inputs_shared['latents'].shape}")
+        # self.load_models_to_device(["vae"])
+        # print(f"latents shape: {inputs_shared['latents'].shape}")
         video = self.vae.decode(
             inputs_shared["latents"],
             device=self.device,
@@ -926,7 +929,7 @@ class WanVideoPipeline(BasePipeline):
             tile_stride=tile_stride,
         )
         video = self.vae_output_to_video(video)
-        self.load_models_to_device([])
+        # self.load_models_to_device([])
 
         return video
 
@@ -1059,7 +1062,7 @@ class WanVideoUnit_NoiseInitializer(PipelineUnit):
             seed=seed,
             rand_device=rand_device,
         )
-        print(f"Noise shape: {noise.shape}")
+        # print(f"Noise shape: {noise.shape}")
         # noise = pipe.generate_noise(
         #     (1, 16, length, height // 8, width // 8), seed=seed, rand_device=rand_device
         # )
@@ -1075,8 +1078,6 @@ class WanVideoUnit_InputVideoEmbedder(PipelineUnit):
             input_params=(
                 'batch_size',
                 "input_video",
-                'input_image',
-                'extra_images',
                 "noise",
                 "tiled",
                 "tile_size",
@@ -1091,8 +1092,6 @@ class WanVideoUnit_InputVideoEmbedder(PipelineUnit):
         pipe: WanVideoPipeline,
         batch_size,
         input_video,
-        input_image,
-        extra_images,
         noise,
         tiled,
         tile_size,
@@ -1108,11 +1107,16 @@ class WanVideoUnit_InputVideoEmbedder(PipelineUnit):
         # print(
         #     f"input image, extra images shape: {input_image.shape}, {extra_images.shape if extra_images is not None else 'N/A'}")
         # input_video = torch.cat([input_image, extra_images], dim=0).clone()
-
-        input_video = pipe.preprocess_video(input_video)
+        video_list = []
+        for _input_video in input_video:
+            _preprocessed_video = pipe.preprocess_video(_input_video)
+            # print(f"Preprocessed video shape: {_preprocessed_video.shape}")
+            video_list.append(_preprocessed_video)
+        videos_tensor = torch.cat(video_list, dim=0)
+        # print(f"Input video shape: {videos_tensor.shape}")
         # print(f"Input video shape: {input_video.shape}")
         input_latents = pipe.vae.encode(
-            input_video,
+            videos_tensor,
             device=pipe.device,
             tiled=tiled,
             tile_size=tile_size,
@@ -1129,6 +1133,7 @@ class WanVideoUnit_InputVideoEmbedder(PipelineUnit):
         #     ).to(dtype=pipe.torch_dtype, device=pipe.device)
         #     input_latents = torch.concat(
         #         [vace_reference_latents, input_latents], dim=2)
+        # print(f"latent and noise shape: {input_latents.shape}, {noise.shape}")
         if pipe.scheduler.training:
             return {"latents": noise, "input_latents": input_latents}
         # else:
@@ -1170,22 +1175,22 @@ class WanVideoUnit_PromptEmbedder(PipelineUnit):
     def process(self, pipe: WanVideoPipeline, prompt, positive, prompt_num) -> dict:
         # pipe.load_models_to_device(self.onload_model_names)
         prompt_emb = []
-        print(f"Encoding prompt: {prompt}")
+        # print(f"Encoding prompt: {prompt}")
         if isinstance(prompt, str):
             prompt = [prompt] * prompt_num
         for _prompt in prompt:
-            print(f"Prompt: {_prompt}")
+            # print(f"Prompt: {_prompt}")
             _prompt_emb = pipe.prompter.encode_prompt(
                 _prompt, positive=positive, device=pipe.device
             )
-            print(f"_prompt embedding shape: {_prompt_emb.shape}")
+            # print(f"_prompt embedding shape: {_prompt_emb.shape}")
             prompt_emb.append(_prompt_emb)
 
         prompt_emb = torch.cat(prompt_emb, dim=0)
         prompt_emb = prompt_emb.to(
             dtype=pipe.torch_dtype, device=pipe.device
         )
-        print(f"Prompt embedding shape: {prompt_emb.shape}")
+        # print(f"Prompt embedding shape: {prompt_emb.shape}")
         return {"context": prompt_emb}
 
 
@@ -1266,8 +1271,8 @@ class WanVideoUnit_ImageEmbedder(PipelineUnit):
 
         if extra_images is not None and extra_image_frame_index is not None and len(extra_image_frame_index) > 0:
             # assert len(extra_image_frame_index) == len(extra_images)
-            print(
-                f"Extra images mean on B F channel {torch.mean(extra_images, dim=(2, 3, 4))}")
+            # print(
+            #     f"Extra images mean on B F channel {torch.mean(extra_images, dim=(2, 3, 4))}")
 
             for _videoid, _video in enumerate(extra_images):
                 # _video F C H W
@@ -1281,19 +1286,21 @@ class WanVideoUnit_ImageEmbedder(PipelineUnit):
                     vae_input[_videoid, idx] = image.squeeze(0)
 
             mask = extra_image_frame_index[:, :, None, None]  # B F 1 1
-            print(f"Mask shape before expand: {mask.shape}")
+            # print(f"Mask shape before expand: {mask.shape}")
 
             mask = mask.expand(
                 batch_size, mask.shape[1], height // 8, width // 8
             )  # B F H W
-            print(f"Mask shape after expand: {mask.shape}")
-            print(f"Mask mean on B F channel {torch.mean(mask, dim=(2, 3))}")
-            print(f"Msk mean on B F channel {torch.mean(msk, dim=(2, 3))}")
+            # print(f"Mask shape after expand: {mask.shape}")
+            # print(f"Mask mean on B F channel {torch.mean(mask, dim=(2, 3))}")
+            # print(f"Msk mean on B F channel {torch.mean(msk, dim=(2, 3))}")
             msk = msk * mask
-            print(
-                f"msk shape after extra images: {msk.shape}, msk mean on B F channel {torch.mean(msk, dim=(2, 3))}")
-            print(
-                f"vae input mean on B F channel {torch.mean(vae_input, dim=(2, 3))}")
+            # print(
+            #     f"msk shape after extra images: {msk.shape}, msk mean on B F channel {torch.mean(msk, dim=(2, 3))}")
+            # print(
+            #     f"vae input mean on B F channel {torch.mean(vae_input, dim=(2, 3))}")
+        else:
+            msk[:, 1:] = 0
 
         msk = torch.concat(
             [torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:]], dim=1
@@ -1301,15 +1308,15 @@ class WanVideoUnit_ImageEmbedder(PipelineUnit):
         msk = msk.view(
             batch_size, msk.shape[1] // 4, 4, height // 8, width // 8)  # B F C(4) H W
         msk = msk.transpose(1, 2)
-        print(
-            f"Mask shape: {msk.shape}, msk mean on B F channel {torch.mean(msk, dim=(1,3, 4))}")
+        # print(
+        #     f"Mask shape: {msk.shape}, msk mean on B F channel {torch.mean(msk, dim=(1,3, 4))}")
         vae_input = vae_input.permute(0, 2, 1, 3, 4).contiguous()  # B C F H W
         # print(
         #     f"before VAE encode, vae_input shape: {vae_input.shape}, msk shape: {msk.shape}"
         # )
-        print(
-            f"vae shape: {vae_input.shape}, msk shape: {msk.shape}, "
-        )
+        # print(
+        #     f"vae shape: {vae_input.shape}, msk shape: {msk.shape}, "
+        # )
         y = pipe.vae.encode(
             vae_input.to(dtype=pipe.torch_dtype, device=pipe.device),
             device=pipe.device,
@@ -1317,12 +1324,12 @@ class WanVideoUnit_ImageEmbedder(PipelineUnit):
             tile_size=tile_size,
             tile_stride=tile_stride,
         )
-        print(f"y shape after VAE encode: {y.shape}")
+        # print(f"y shape after VAE encode: {y.shape}")
         # print(f"after VAE encode, y shape: {y.shape}")
         y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
-        print()
+        # print()
         y = torch.concat([msk, y], dim=1)  # B 16+4 F H W
-        print(f"after concat, y shape: {y.shape}")
+        # print(f"after concat, y shape: {y.shape}")
         # y = y.unsqueeze(0)
         clip_context = clip_context.to(
             dtype=pipe.torch_dtype, device=pipe.device)
@@ -1466,6 +1473,7 @@ class WanVideoUnit_Control_Embedder(PipelineUnit):
                 "clip_feature",
                 "y",
                 'plucker_embedding',
+                'batch_size',
             ),
             onload_model_names=("vae"),
         )
@@ -1483,20 +1491,21 @@ class WanVideoUnit_Control_Embedder(PipelineUnit):
         clip_feature,
         y,
         plucker_embedding,
+        batch_size,
     ):
         if control_video is None:
             return {}
-        pipe.load_models_to_device(self.onload_model_names)
-        print(
-            f"Control video shape: {control_video.shape if control_video is not None else 'None'}")
+        # pipe.load_models_to_device(self.onload_model_names)
+        # print(
+        #     f"Control video shape: {control_video.shape if control_video is not None else 'None'}")
         control_video = [
             pipe.preprocess_video(
                 _control_video
             ).to(device=pipe.device) for _control_video in control_video
         ]
-        print(f"Control video sample 0 shape: {control_video[0].shape}")
+        # print(f"Control video sample 0 shape: {control_video[0].shape}")
         control_video = torch.cat(control_video, dim=0)
-        print(f"Control video shape: {control_video.shape}")
+        # print(f"Control video shape: {control_video.shape}")
         # print(f"y shape: {y.shape if y is not None else None}")
         control_latents = pipe.vae.encode(
             control_video,
@@ -1507,7 +1516,7 @@ class WanVideoUnit_Control_Embedder(PipelineUnit):
         )
         control_latents = control_latents.to(
             dtype=pipe.torch_dtype, device=pipe.device)
-        print(f"Control latents shape: {control_latents.shape}")
+        # print(f"Control latents shape: {control_latents.shape}")
         # if clip_feature is None or y is None:
         #     clip_feature = torch.zeros(
         #         (1, 257, 1280), dtype=pipe.torch_dtype, device=pipe.device
@@ -1520,10 +1529,10 @@ class WanVideoUnit_Control_Embedder(PipelineUnit):
         if plucker_embedding is None:
             h, w = control_video.shape[-2:]
             plucker_embedding = torch.zeros(
-                (1, 6, num_frames, h, w), dtype=pipe.torch_dtype, device=pipe.device
+                (batch_size, 6, num_frames, h, w), dtype=pipe.torch_dtype, device=pipe.device
             )
         else:
-            plucker_embedding = plucker_embedding.unsqueeze(0).to(
+            plucker_embedding = plucker_embedding.to(
                 dtype=torch.float32, device=pipe.device
             )
         # print(f"plucker_embedding shape: {plucker_embedding.shape}")
@@ -1685,7 +1694,7 @@ class WanVideoUnit_VACE(PipelineUnit):
             or vace_video_mask is not None
             or vace_reference_image is not None
         ):
-            pipe.load_models_to_device(["vae"])
+            # pipe.load_models_to_device(["vae"])
             if vace_video is None:
                 vace_video = torch.zeros(
                     (1, 3, num_frames, height, width),
@@ -2072,8 +2081,9 @@ def model_fn_wan_video(
     # print model dtype and data dtype
     # print(
     #     f"Model dtype: {next(dit.parameters()).dtype}, data dtype: {latents.dtype}")
+    x = latents
+
     if control_latents is None:
-        # print(f"No control latents provided, initializing to zeros.")
         control_latents = torch.zeros_like(x)
 
     t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, timestep))
@@ -2083,7 +2093,6 @@ def model_fn_wan_video(
             motion_controller(motion_bucket_id).unflatten(1, (6, dit.dim))
     context = dit.text_embedding(context)
 
-    x = latents
     # c_b, c_c, c_f, c_h, c_w = x.shape
 
     # Merged cfg
@@ -2097,13 +2106,13 @@ def model_fn_wan_video(
     # import pdb
     # pdb.set_trace()
     if dit.has_image_input:
-        print(
-            f"x ,y shape before concat: {x.shape}, {y.shape if y is not None else None}")
+        # print(
+        #     f"x ,y shape before concat: {x.shape}, {y.shape if y is not None else None}")
         x = torch.cat([x, y], dim=1)  # (b, c_x + c_y, f, h, w)
         control_latents = torch.cat([control_latents, y.clone()], dim=1)
         clip_embdding = dit.img_emb(clip_feature)
-        print(f"clip_embdding shape: {clip_embdding.shape}")
-        print(f"context shape: {context.shape}")
+        # print(f"clip_embdding shape: {clip_embdding.shape}")
+        # print(f"context shape: {context.shape}")
         context = torch.cat([clip_embdding, context], dim=1)
 
     # Add camera control
@@ -2111,22 +2120,19 @@ def model_fn_wan_video(
     control_latents, _ = dit.patchify(
         control_latents, None)
     if dit.pre_camera_control:
-
         pose_embedding = dit.pose_encoder(plucker_embedding)
-        # print(f"x shape before pose embedding: {x.shape}, pose_embedding shape: {pose_embedding.shape}")
         x = x + dit.pose_zero_linear(pose_embedding)
-        # whether to add pose emebdding to the control latents
 
-    # Reference image
-    if reference_latents is not None:
-        if len(reference_latents.shape) == 5:
-            reference_latents = reference_latents[:, :, 0]
-        reference_latents = dit.ref_conv(
-            reference_latents).flatten(2).transpose(1, 2)
-        x = torch.concat([reference_latents, x], dim=1)
-        control_latents = torch.concat(
-            [reference_latents.clone(), control_latents], dim=1)
-        f += 1
+    # # Reference image
+    # if reference_latents is not None:
+    #     if len(reference_latents.shape) == 5:
+    #         reference_latents = reference_latents[:, :, 0]
+    #     reference_latents = dit.ref_conv(
+    #         reference_latents).flatten(2).transpose(1, 2)
+    #     x = torch.concat([reference_latents, x], dim=1)
+    #     control_latents = torch.concat(
+    #         [reference_latents.clone(), control_latents], dim=1)
+    #     f += 1
 
     freqs = (
         torch.cat(
@@ -2147,8 +2153,8 @@ def model_fn_wan_video(
     else:
         tea_cache_update = False
 
-    if vace_context is not None:
-        vace_hints = vace(x, vace_context, context, t_mod, freqs)
+    # if vace_context is not None:
+    #     vace_hints = vace(x, vace_context, context, t_mod, freqs)
 
     # blocks
     if use_unified_sequence_parallel:

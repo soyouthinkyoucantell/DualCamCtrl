@@ -6,9 +6,11 @@ import math
 from typing import Tuple, Optional
 from einops import rearrange
 from .utils import hash_state_dict_keys
-# from .wan_video_camera_controller import SimpleAdapter
+from .wan_video_camera_controller import SimpleAdapter
 from .camera_pose_encoder.pose_adaptor import CameraPoseEncoder
-from .camera_pose_encoder.light_weight_pose_encoder import SimpleAdapter
+from .camera_pose_encoder.light_weight_pose_encoder import SimpleAdapterMy
+from .gate_3d_linear import ResidualFusion3D_Gating
+from .gate_3d_linear_stack import ResidualFusion3D_Stack
 
 try:
     import flash_attn_interface
@@ -102,8 +104,7 @@ def precompute_freqs_cis_3d(dim: int, end: int = 1024, theta: float = 10000.0):
 
 def precompute_freqs_cis(dim: int, end: int = 1024, theta: float = 10000.0):
     # 1d rope precompute
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)
-                   [: (dim // 2)].double() / dim))
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].double() / dim))
     freqs = torch.outer(torch.arange(end, device=freqs.device), freqs)
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
     return freqs_cis
@@ -224,12 +225,12 @@ class SelfAttentionSeparate(nn.Module):
         if rank > 0:
             # LoraLinear
             self.q_zl_before = LoRALinearLayer(dim, dim, rank=rank)
-            self.k_zl_before = LoRALinearLayer(dim, dim,  rank=rank)
-            self.v_zl_before = LoRALinearLayer(dim, dim,  rank=rank)
+            self.k_zl_before = LoRALinearLayer(dim, dim, rank=rank)
+            self.v_zl_before = LoRALinearLayer(dim, dim, rank=rank)
 
-            self.q_zl_after = LoRALinearLayer(dim, dim,  rank=rank)
+            self.q_zl_after = LoRALinearLayer(dim, dim, rank=rank)
             self.k_zl_after = LoRALinearLayer(dim, dim, rank=rank)
-            self.v_zl_after = LoRALinearLayer(dim, dim,  rank=rank)
+            self.v_zl_after = LoRALinearLayer(dim, dim, rank=rank)
         else:
             # Normal Linear
             self.q_zl_before = nn.Linear(dim, dim)
@@ -247,8 +248,14 @@ class SelfAttentionSeparate(nn.Module):
         self.zero_init_linear()
 
     def zero_init_linear(self):
-        layers_to_handle = [self.q_zl_before, self.k_zl_before, self.v_zl_before,
-                            self.q_zl_after, self.k_zl_after, self.v_zl_after]
+        layers_to_handle = [
+            self.q_zl_before,
+            self.k_zl_before,
+            self.v_zl_before,
+            self.q_zl_after,
+            self.k_zl_after,
+            self.v_zl_after,
+        ]
         for _layer in layers_to_handle:
             if isinstance(_layer, nn.Linear):
                 nn.init.zeros_(_layer.weight)
@@ -265,15 +272,16 @@ class SelfAttentionSeparate(nn.Module):
         # ----------------------------------------------------------------
         else:
             q = self.norm_q(
-                self.q(x+self.q_zl_before(camera_pose_embedding)) +
-                self.q_zl_after(camera_pose_embedding)
+                self.q(x + self.q_zl_before(camera_pose_embedding))
+                + self.q_zl_after(camera_pose_embedding)
             )
             k = self.norm_k(
-                self.k(x+self.k_zl_before(camera_pose_embedding)
-                       )+self.k_zl_after(camera_pose_embedding)
+                self.k(x + self.k_zl_before(camera_pose_embedding))
+                + self.k_zl_after(camera_pose_embedding)
             )
-            v = self.v(x+self.v_zl_before(camera_pose_embedding)) + \
-                self.v_zl_after(camera_pose_embedding)
+            v = self.v(x + self.v_zl_before(camera_pose_embedding)) + self.v_zl_after(
+                camera_pose_embedding
+            )
         # --------------------------------------------------------------------
 
         q = rope_apply(q, freqs, self.num_heads)
@@ -284,7 +292,12 @@ class SelfAttentionSeparate(nn.Module):
 
 class CrossAttentionSeparate(nn.Module):
     def __init__(
-        self, dim: int, num_heads: int, eps: float = 1e-6, has_image_input: bool = False, rank=64
+        self,
+        dim: int,
+        num_heads: int,
+        eps: float = 1e-6,
+        has_image_input: bool = False,
+        rank=64,
     ):
         super().__init__()
         self.dim = dim
@@ -298,8 +311,8 @@ class CrossAttentionSeparate(nn.Module):
 
         if rank > 0:
             # LoraLinear
-            self.q_zl_before = LoRALinearLayer(dim, dim,  rank=rank)
-            self.q_zl_after = LoRALinearLayer(dim, dim,  rank=rank)
+            self.q_zl_before = LoRALinearLayer(dim, dim, rank=rank)
+            self.q_zl_after = LoRALinearLayer(dim, dim, rank=rank)
         else:
             # Normal linear
             self.q_zl_before = nn.Linear(dim, dim, bias=False)
@@ -317,8 +330,10 @@ class CrossAttentionSeparate(nn.Module):
         self.zero_init_linear()
 
     def zero_init_linear(self):
-        layers_to_handle = [self.q_zl_before,
-                            self.q_zl_after,]
+        layers_to_handle = [
+            self.q_zl_before,
+            self.q_zl_after,
+        ]
         for _layer in layers_to_handle:
             if isinstance(_layer, nn.Linear):
                 nn.init.zeros_(_layer.weight)
@@ -336,8 +351,10 @@ class CrossAttentionSeparate(nn.Module):
         # v = self.v(ctx)
         # TODO uncomment
         # -------------------------------------------------
-        q = self.norm_q(self.q(x+self.q_zl_before(camera_pose_embedding)
-                               )+self.q_zl_after(camera_pose_embedding))
+        q = self.norm_q(
+            self.q(x + self.q_zl_before(camera_pose_embedding))
+            + self.q_zl_after(camera_pose_embedding)
+        )
         k = self.norm_k(self.k(ctx))
         v = self.v(ctx)
         # -------------------------------------------------
@@ -411,7 +428,7 @@ class CameraDiTBlock(nn.Module):
         num_heads: int,
         ffn_dim: int,
         eps: float = 1e-6,
-        camera_lora_rank=64
+        camera_lora_rank=64,
     ):
         super().__init__()
         self.dim = dim
@@ -419,7 +436,8 @@ class CameraDiTBlock(nn.Module):
         self.ffn_dim = ffn_dim
 
         self.self_attn = SelfAttentionSeparate(
-            dim, num_heads, eps, rank=camera_lora_rank)
+            dim, num_heads, eps, rank=camera_lora_rank
+        )
         self.cross_attn = CrossAttentionSeparate(
             dim, num_heads, eps, has_image_input=has_image_input, rank=camera_lora_rank
         )
@@ -441,8 +459,9 @@ class CameraDiTBlock(nn.Module):
         ).chunk(6, dim=1)
         input_x = modulate(self.norm1(x), shift_msa, scale_msa)
         # x = self.gate(x, gate_msa, self.self_attn(input_x, freqs))
-        x = self.gate(x, gate_msa, self.self_attn(
-            input_x, freqs, camera_pose_embedding))
+        x = self.gate(
+            x, gate_msa, self.self_attn(input_x, freqs, camera_pose_embedding)
+        )
 
         x = x + self.cross_attn(self.norm3(x), context, camera_pose_embedding)
         input_x = modulate(self.norm2(x), shift_mlp, scale_mlp)
@@ -518,14 +537,12 @@ class WanModel(torch.nn.Module):
             in_dim, dim, kernel_size=patch_size, stride=patch_size
         )
         self.text_embedding = nn.Sequential(
-            nn.Linear(text_dim, dim), nn.GELU(
-                approximate="tanh"), nn.Linear(dim, dim)
+            nn.Linear(text_dim, dim), nn.GELU(approximate="tanh"), nn.Linear(dim, dim)
         )
         self.time_embedding = nn.Sequential(
             nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim)
         )
-        self.time_projection = nn.Sequential(
-            nn.SiLU(), nn.Linear(dim, dim * 6))
+        self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
         self.blocks = nn.ModuleList(
             [
                 DiTBlock(has_image_input, dim, num_heads, ffn_dim, eps)
@@ -541,39 +558,33 @@ class WanModel(torch.nn.Module):
                 1280, dim, has_pos_emb=has_image_pos_emb
             )  # clip_feature_dim = 1280
         if has_ref_conv:
-            self.ref_conv = nn.Conv2d(
-                16, dim, kernel_size=(2, 2), stride=(2, 2))
+            self.ref_conv = nn.Conv2d(16, dim, kernel_size=(2, 2), stride=(2, 2))
         self.has_image_pos_emb = has_image_pos_emb
         self.has_ref_conv = has_ref_conv
 
-        # TODO
         self.control_adapter = None
-        # if add_control_adapter:
-        #     self.control_adapter = SimpleAdapter(
-        #         in_dim_control_adapter,
-        #         dim,
-        #         kernel_size=patch_size[1:],
-        #         stride=patch_size[1:],
-        #     )
-        # else:
-        #     self.control_adapter = None
+        self.add_control_adapter = add_control_adapter
+        if add_control_adapter:
+            self.control_adapter = SimpleAdapter(
+                in_dim_control_adapter,
+                dim,
+                kernel_size=patch_size[1:],
+                stride=patch_size[1:],
+            )
+        else:
+            self.control_adapter = None
 
     def patchify(
         self, x: torch.Tensor, control_camera_latents_input: torch.Tensor = None
     ):
-        print(f"x shape before patch embedding: {x.shape}")
         x = self.patch_embedding(x)
-        print(f"x shape after patch embedding: {x.shape}")
         if (
             self.control_adapter is not None
             and control_camera_latents_input is not None
         ):
-            print(
-                f"Camera control input shape: {control_camera_latents_input.shape}")
             y_camera = self.control_adapter(control_camera_latents_input)
-            print(f"Camera control encoded shape: {y_camera.shape}")
             x = [u + v for u, v in zip(x, y_camera)]
-            x = x[0].unsqueeze(0)
+            # x = x[0].unsqueeze(0)
         grid_size = x.shape[2:]
         x = rearrange(x, "b c f h w -> b (f h w) c").contiguous()
         return x, grid_size  # x, grid_size: (f, h, w)
@@ -601,8 +612,7 @@ class WanModel(torch.nn.Module):
         use_gradient_checkpointing_offload: bool = False,
         **kwargs,
     ):
-        t = self.time_embedding(
-            sinusoidal_embedding_1d(self.freq_dim, timestep))
+        t = self.time_embedding(sinusoidal_embedding_1d(self.freq_dim, timestep))
         t_mod = self.time_projection(t).unflatten(1, (6, self.dim))
         context = self.text_embedding(context)
 
@@ -716,14 +726,12 @@ class WanModelStateDictConverter:
             "proj_out.weight": "head.head.weight",
         }
         state_dict_ = {}
-        print(
-            f"hash_state_dict_keys(state_dict): {hash_state_dict_keys(state_dict)}")
+        print(f"hash_state_dict_keys(state_dict): {hash_state_dict_keys(state_dict)}")
         for name, param in state_dict.items():
             if name in rename_dict:
                 state_dict_[rename_dict[name]] = param
             else:
-                name_ = ".".join(name.split(
-                    ".")[:1] + ["0"] + name.split(".")[2:])
+                name_ = ".".join(name.split(".")[:1] + ["0"] + name.split(".")[2:])
                 if name_ in rename_dict:
                     name_ = rename_dict[name_]
                     name_ = ".".join(
@@ -966,9 +974,7 @@ class WanControlNet(WanModel):
         num_heads: int,
         num_layers: int,
         has_image_input: bool,
-
         control_block_index,
-
         camera_lora_rank: int = 64,
         cover_base: int = 5,
         pre_camera_control: bool = False,
@@ -976,8 +982,12 @@ class WanControlNet(WanModel):
         has_ref_conv: bool = False,
         add_control_adapter: bool = False,
         in_dim_control_adapter: int = 24,
+        use_gate_3d_linear: bool = False,
+        update = False,
         camera_inject_blocks=[],
-        ** kwargs,
+        rgb_inject_blocks=[],
+        depth_inject_blocks=[],
+        **kwargs,
     ):
         super().__init__(
             dim,
@@ -997,42 +1007,23 @@ class WanControlNet(WanModel):
             in_dim_control_adapter,
         )
         # This model is initialized with extra kwargs: {'has_image_input': True, 'patch_size': [1, 2, 2], 'in_dim': 36, 'dim': 1536, 'ffn_dim': 8960, 'freq_dim': 256, 'text_dim': 4096, 'out_dim': 16, 'num_heads': 12, 'num_layers': 30, 'eps': 1e-06}
-        #
-
-        self.camera_has_image_input = has_image_input
-        self.camera_dim = dim
-        self.camera_num_heads = num_heads
-        self.camera_ffn_dim = ffn_dim
-        self.eps = eps
-        self.cover_base = cover_base
-        self.fuse_blocks = -(-len(camera_inject_blocks)//cover_base)
-        self.num_pose_blocks = len(camera_inject_blocks)
-        self.camera_inject_blocks = camera_inject_blocks
-        self.camera_lora_rank = camera_lora_rank
-        self.pre_camera_control = pre_camera_control
-        if pre_camera_control:
-            self.pose_encoder = SimpleAdapter(
-                in_dim=6,
-                out_dim=dim,
-                kernel_size=2,
-                stride=1
-            )
-            self.pose_zero_linear = nn.Linear(dim, dim, bias=False)
-            self.pose_zero_linear.weight.data.zero_()
-        else:
-            # Camera pose encoder
-            print(
-                f"Init CameraPoseEncoder with kwargs: {kwargs['pose_encoder']}")
-            self.pose_encoder = CameraPoseEncoder(
-                **kwargs['pose_encoder'],
-                fuse_blocks=self.fuse_blocks,
-            )
+        self.use_gate_3d_linear = use_gate_3d_linear
+        self.rgb_inject_blocks = rgb_inject_blocks
+        self.depth_inject_blocks = depth_inject_blocks
+        if self.add_control_adapter:
+            print(f"Adding camera into input using addition.")
 
         self.control_block_index = control_block_index
-        num_control_block = len(self.control_block_index)
+        num_control_block = len(control_block_index)
+        self.num_control_block = num_control_block
+        num_rgb_inject_blocks = len(rgb_inject_blocks)
+        self.num_rgb_inject_blocks = num_rgb_inject_blocks
+        num_depth_inject_blocks = len(depth_inject_blocks)
+        self.num_depth_inject_blocks = num_depth_inject_blocks
         if num_control_block >= 0:
             print(
-                f"Using {num_control_block} control blocks, for layers {self.control_block_index}")
+                f"Using {num_control_block} control blocks, for layers {self.control_block_index}"
+            )
             # Control blocks
             self.control_blocks = nn.ModuleList(
                 [
@@ -1046,78 +1037,86 @@ class WanControlNet(WanModel):
                     for _ in range(num_control_block)
                 ]
             )
-            self.control_zero_inits = nn.ModuleList(
-                [nn.Linear(dim, dim, bias=False)
-                 for _ in range(num_control_block)]
-            )
+
+            if use_gate_3d_linear:
+                if update:
+                    self.control_zero_inits = nn.ModuleList(
+                        [
+                            ResidualFusion3D_Stack(C=dim)
+                            for _ in range(num_depth_inject_blocks)
+                        ]
+                    )
+                    self.rgb_zero_inits = nn.ModuleList(
+                        [
+                            ResidualFusion3D_Stack(C=dim)
+                            for _ in range(num_rgb_inject_blocks)
+                        ]
+                    )
+                else:
+                    self.control_zero_inits = nn.ModuleList(
+                        [
+                            ResidualFusion3D_Gating(C=dim)
+                            for _ in range(num_depth_inject_blocks)
+                        ]
+                    )
+                    self.rgb_zero_inits = nn.ModuleList(
+                        [
+                            ResidualFusion3D_Gating(C=dim)
+                            for _ in range(num_rgb_inject_blocks)
+                        ]
+                    )
+
+            else:
+                self.control_zero_inits = nn.ModuleList(
+                    [
+                        nn.Linear(dim, dim, bias=False)
+                        for _ in range(num_depth_inject_blocks)
+                    ]
+                )
+                self.rgb_zero_inits = nn.ModuleList(
+                    [
+                        nn.Linear(dim, dim, bias=False)
+                        for _ in range(num_rgb_inject_blocks)
+                    ]
+                )
+
+                for idx in range(num_depth_inject_blocks):
+                    self.control_zero_inits[idx].weight.data.zero_()
+                    if self.control_zero_inits[idx].bias is not None:
+                        self.control_zero_inits[idx].bias.data.zero_()
+                for idx in range(num_rgb_inject_blocks):
+                    self.rgb_zero_inits[idx].weight.data.zero_()
+                    if self.rgb_zero_inits[idx].bias is not None:
+                        self.rgb_zero_inits[idx].bias.data.zero_()
+
         else:
             print(
-                f"No control blocks used, control_block_index is empty: {control_block_index}")
+                f"No control blocks used, control_block_index is empty: {control_block_index}"
+            )
             self.control_blocks = None
 
-        # self.camera_zero_inits = nn.ModuleList(
-        #     [nn.Linear(dim, dim, bias=False)
-        #      for _ in range(self.num_pose_blocks)]
-        # )
-        # print the param of each first child of the whole contorlnet
-        _child_model = {
-            'pose_encoder': self.pose_encoder,
-            'control_blocks': self.control_blocks,
-            'control_zero_inits': self.control_zero_inits,
-            # 'camera_zero_inits': self.camera_zero_inits,
-            'blocks': self.blocks,
-        }
-
-        for name, child in _child_model.items():
-            param_count = sum(p.numel() for p in child.parameters())
-            print(
-                f"Module '{name}' ({child.__class__.__name__}) has {param_count} parameters.")
-
-    def alter_camera_blocks(self):
-        if self.pre_camera_control:
-            return
-        for idx, block in enumerate(self.blocks):
-            if idx in self.camera_inject_blocks:
-                layer_state_state = block.state_dict()
-                self.blocks[idx] = CameraDiTBlock(
-                    has_image_input=self.camera_has_image_input,
-                    dim=self.camera_dim,
-                    num_heads=self.camera_num_heads,
-                    ffn_dim=self.camera_ffn_dim,
-                    eps=self.eps,
-                    camera_lora_rank=self.camera_lora_rank,
-                )
-                state = self.blocks[idx].load_state_dict(
-                    layer_state_state, strict=False)
-        print(
-            f"After alternation, blocks params:{sum(p.numel() for p in self.blocks.parameters())}")
-        print(
-            f"Total param of the model : {sum(p.numel() for p in self.parameters())}")
-
     def copy_weights_from_main_branch(self):
+        # print(f"Start copying weights from main branch to control blocks.")
         if self.control_blocks is None:
             return
+        miss_keys = []
+        unexpected_keys = []
         for idx, block in enumerate(self.blocks):
             if idx in self.control_block_index:
                 c_block_id = self.control_block_index.index(idx)
+                # print(f"copy main block {idx} to control block {c_block_id}")
                 state = self.control_blocks[c_block_id].load_state_dict(
-                    block.state_dict())
+                    block.state_dict(), strict=True
+                )
+        return
 
-        print(f"Finished copying weights from main branch to control blocks.")
-
-    def zero_init_linear(self):
-        if self.control_blocks is not None:
-            for idx, block in enumerate(self.control_blocks):
-                # print(f"Zero init control block {idx}")
-                self.control_zero_inits[idx].weight.data.zero_()
-                if self.control_zero_inits[idx].bias is not None:
-                    self.control_zero_inits[idx].bias.data.zero_()
-
-        # for block in self.camera_zero_inits:
-        #     # print(f"Zero init camera block")
-        #     block.weight.data.zero_()
-        #     if block.bias is not None:
-        #         block.bias.data.zero_()
+    # def zero_init_linear(self):
+    #     if self.control_blocks is not None:
+    #         for idx in range(self.num_depth_inject_blocks):
+    #             # print(f"Zero init control block {idx}")
+    #             self.control_zero_inits[idx].weight.data.zero_()
+    #             if self.control_zero_inits[idx].bias is not None:
+    #                 self.control_zero_inits[idx].bias.data.zero_()
 
     def patchify(
         self, x: torch.Tensor, control_camera_latents_input: torch.Tensor = None
@@ -1134,7 +1133,7 @@ class WanControlNet(WanModel):
 
             y_camera = self.control_adapter(control_camera_latents_input)
             x = [u + v for u, v in zip(x, y_camera)]
-            x = x[0].unsqueeze(0)
+            x = torch.stack(x, dim=0)
         grid_size = x.shape[2:]
         # print(f"Grid size after patch embedding: {grid_size}")
 
@@ -1169,8 +1168,7 @@ class WanControlNet(WanModel):
 
         if control_video is None:
             control_video = torch.zeros_like(x)
-        t = self.time_embedding(
-            sinusoidal_embedding_1d(self.freq_dim, timestep))
+        t = self.time_embedding(sinusoidal_embedding_1d(self.freq_dim, timestep))
         t_mod = self.time_projection(t).unflatten(1, (6, self.dim))
         context = self.text_embedding(context)
 
@@ -1181,8 +1179,7 @@ class WanControlNet(WanModel):
             context = torch.cat([clip_embdding, context], dim=1)
 
         x, (f, h, w) = self.patchify(x)
-        control_latents, _ = self.patchify(
-            control_latents, None)
+        control_latents, _ = self.patchify(control_latents, None)
 
         freqs = (
             torch.cat(
@@ -1203,15 +1200,7 @@ class WanControlNet(WanModel):
 
             return custom_forward
 
-        # Control camera latents
-        pose_embeddings = self.pose_encoder(camera_pose_embedding)
-
         for idx, block in enumerate(self.blocks):
-            if idx in self.camera_inject_blocks:
-                _pose_embeddings = pose_embeddings[idx -
-                                                   self.camera_inject_blocks[0]]
-            else:
-                _pose_embeddings = None
             # Control branch
             if idx < self.num_control_block:
                 control_latents = control_latents + x
@@ -1219,8 +1208,7 @@ class WanControlNet(WanModel):
                     if use_gradient_checkpointing_offload:
                         with torch.autograd.graph.save_on_cpu():
                             control_latents = torch.utils.checkpoint.checkpoint(
-                                create_custom_forward(
-                                    self.control_blocks[idx]),
+                                create_custom_forward(self.control_blocks[idx]),
                                 control_latents,
                                 context,
                                 t_mod,
@@ -1228,8 +1216,7 @@ class WanControlNet(WanModel):
                                 use_reentrant=False,
                             )
                     else:
-                        print(
-                            f"using gradient checkpointing for control block {idx}")
+                        print(f"using gradient checkpointing for control block {idx}")
                         control_video = torch.utils.checkpoint.checkpoint(
                             create_custom_forward(self.control_blocks[idx]),
                             control_latents,
@@ -1268,8 +1255,9 @@ class WanControlNet(WanModel):
                         use_reentrant=False,
                     )
             else:
-                x = block(x, context, t_mod, freqs,
-                          camera_pose_embedding=_pose_embeddings)
+                x = block(
+                    x, context, t_mod, freqs, camera_pose_embedding=_pose_embeddings
+                )
 
         x = self.head(x, t)
         x = self.unpatchify(x, (f, h, w))

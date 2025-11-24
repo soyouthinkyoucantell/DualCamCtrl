@@ -4,3 +4,8 @@ models/
 .vscode/
 __pycache__/
 video/
+diffsynth.egg-info/
+.claude/
+data_prepare/
+apps/
+dependency/

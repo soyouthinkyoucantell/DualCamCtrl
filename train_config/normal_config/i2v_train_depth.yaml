@@ -1,0 +1,57 @@
+# model:
+model_config_path: "/data/user/hongfeizhang/hongfei_workspace/DiffSynth-Studio/model_config/controlnet_gate.yaml"
+model_id_with_origin_paths: "PAI/Wan2.1-Fun-V1.1-1.3B-Control-Camera:diffusion_pytorch_model*.safetensors,PAI/Wan2.1-Fun-V1.1-1.3B-Control-Camera:models_t5_umt5-xxl-enc-bf16.pth,PAI/Wan2.1-Fun-V1.1-1.3B-Control-Camera:Wan2.1_VAE.pth,PAI/Wan2.1-Fun-V1.1-1.3B-Control-Camera:models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"
+pipe_name: "wan_video_camera"
+training_state_dir: null
+output_path: "/data/user/hongfeizhang/experiments/Wan/09-10-14-36-train-depth-I2V-480p-mask-depth-loss"
+
+# Trainable models
+trainable_models: "dit"
+remove_prefix_in_ckpt: "pipe.dit"
+freeze_main_except: "all"        # [none, lora, all]
+has_control_model: true
+freeze_control_except: "all"     # [none, lora, all]
+copy_control_weights: true
+freeze_zero_linear: true
+
+# LoRA / checkpoint
+ckpt_has_lora: false
+ckpt_lora_base_model: "dit"
+ckpt_lora_module: "q,k,v,o,ffn.0,ffn.2"
+ckpt_lora_rank: 32
+ckpt_lora_adapter_name: "default"
+
+add_lora: false
+lora_base_model: null
+lora_target_modules: "q,k,v,o,ffn.0,ffn.2"
+lora_adapter_name: "control"
+lora_rank: 32
+
+
+# train:
+t2v: false
+num_epochs: 1000000
+learning_rate: 1e-5
+validate_step: 500
+log_step: 10
+use_gradient_checkpointing: true
+no_extra_frame: true
+warmup_steps: 0
+return_control_latents: true
+
+# validate 
+init_validate: true
+validate_batch: 8
+
+
+# dataset:
+dataset_name: "re10k"   # [re10k, dl3dv]
+
+# Re10k
+batch_size: 1
+train_height: 480
+train_width: 720
+use_image_depth: false
+
+# optimizer:
+load_optimizer: false
