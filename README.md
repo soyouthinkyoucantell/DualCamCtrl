@@ -69,7 +69,7 @@ These designs collectively enable **DualCamCtrl** to better disentangle appearan
 
 ```
 git clone https://github.com/soyouthinkyoucantell/DualCamCtrl.git
-conda create -n dualcamctrl python=3.11
+conda create -n dualcamctrl python=3.11 -y
 conda activate dualcamctrl
 ```
 #### Install DiffSynth-Studio dependencies from source code:

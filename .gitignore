@@ -13,3 +13,4 @@ dependency
 !diffsynth/models/
 !diffsynth/models/camera_pose_encoder/
 checkpoints
+gradio
