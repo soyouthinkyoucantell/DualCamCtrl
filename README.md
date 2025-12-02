@@ -140,7 +140,6 @@ Run app
 ```
 export PYTHONPATH=.
 python gradio/app.py # For Large Memory GPU
-CUDA_VISIBLE_DEVICES=[GPU_IDS(e.g. 0,1,2)] python gradio/app_multi.py # Sharding the model for small memory gpu group
 ```
 
 ## 🔥 Training
