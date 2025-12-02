@@ -130,7 +130,7 @@ python -m test_script.test_demo
 
 ## ✨ Gradio 
 
-Install gradio dependency
+Install gradio dependency (needs large memory GPU)
 ```
 pip install gradio
 ```
