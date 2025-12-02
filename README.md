@@ -31,13 +31,13 @@ https://github.com/user-attachments/assets/e6a1ff6c-f74f-4c7f-9ad1-66ea7b65353a
 ####  6. [✨ Gradio](#✨-gradio)
 ####  7. [🔥 Training](#🔥-training) -->
 
-#### 1. [📰 News](#1-news)
-#### 2. [⚙️ TODO](#2-todo)
-#### 3. [🎯 Overview](#3-overview)
-#### 4. [🔧 Installation](#4-installation)
-#### 5. [🔮 Inference](#5-inference)
-#### 6. [✨ Gradio](#6-gradio)
-#### 7. [🔥 Training](#7-training)
+#### 1. [📰 News](#📰-news)
+#### 2. [⚙️ TODO](#-todo)
+#### 3. [🎯 Overview](#-overview)
+#### 4. [🔧 Installation](#-installation)
+#### 5. [🔮 Inference](#-inference)
+#### 6. [✨ Gradio](#-gradio)
+#### 7. [🔥 Training](#-training)
 
 ## 📰 News
 
