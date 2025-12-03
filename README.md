@@ -155,3 +155,17 @@ python gradio/app.py # For Large Memory GPU
 ## 🔥 Training
 
 ### Training details coming soon… Stay tuned! 🚀
+
+## Citation
+If you find our work useful, please consider cite our work:
+```bbb
+@misc{zhang2025dualcamctrldualbranchdiffusionmodel,
+  title        = {DualCamCtrl: Dual-Branch Diffusion Model for Geometry-Aware Camera-Controlled Video Generation},
+  author       = {Hongfei Zhang and Kanghao Chen and Zixin Zhang and Harold Haodong Chen and Yuanhuiyi Lyu and Yuqi Zhang and Shuai Yang and Kun Zhou and Yingcong Chen},
+  year         = {2025},
+  eprint       = {2511.23127},
+  archivePrefix= {arXiv},
+  primaryClass = {cs.CV},
+  url          = {https://arxiv.org/abs/2511.23127},
+}
+```
