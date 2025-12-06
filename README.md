@@ -6,7 +6,7 @@
 [![Ckpt](https://img.shields.io/badge/🤗%20HuggingFace-Checkpoint%20-yellow)](https://huggingface.co/FayeHongfeiZhang/DualCamCtrl/tree/main)
 
 
-[Hongfei Zhang](https://www.linkedin.com/in/hongfei-zhang-2435b2227/) <sup>1*</sup>, [Kanghao Chen](https://khao123.github.io/) <sup>1,5*</sup>,  [Zixin Zhang](https://scholar.google.com/citations?user=BbZ0mwoAAAAJ&hl=en) <sup>1,5</sup>, [Harold H. Chen](https://haroldchen19.github.io/) <sup>1,5</sup>, 
+[Hongfei Zhang](https://x.com/hongfeizhang0xF) <sup>1*</sup>, [Kanghao Chen](https://khao123.github.io/) <sup>1,5*</sup>,  [Zixin Zhang](https://scholar.google.com/citations?user=BbZ0mwoAAAAJ&hl=en) <sup>1,5</sup>, [Harold H. Chen](https://haroldchen19.github.io/) <sup>1,5</sup>, 
   [Yuanhuiyi Lyu](https://qc-ly.github.io/) <sup>1</sup>,  [Yuqi Zhang](#) <sup>3</sup>,  [Shuai Yang](https://andysonys.github.io/) <sup>1</sup>,  [Kun Zhou](https://redrock303.github.io/) <sup>4</sup>,  [Ying-Cong Chen](https://www.yingcong.me/) <sup>1,2,✉</sup> 
 
 <sup>1</sup> HKUST(GZ)  <sup>2</sup> HKUST  <sup>3</sup> Fudan University  <sup>4</sup> Shenzhen University  <sup>5</sup> Knowin
