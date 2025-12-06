@@ -104,6 +104,11 @@ pip install numpy==1.26.4 peft accelerate==1.9.0 decord==0.6.0 deepspeed diffuse
 
 ## 🔮 Inference
 
+### How to Get Input Depth (For Inference)
+
+We utilize [Video Depth Anything](https://github.com/DepthAnything/Video-Depth-Anything) to predict both image depth and video depth. For inference, only image depth is needed, so you could run VDA (Video Depth Anything) with a single image input. 
+
+
 
 ### Checkpoints
 
